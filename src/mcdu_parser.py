@@ -211,6 +211,89 @@ def row_empty_to_occupied(flags: List[bool]) -> List[bool]:
     return [not flag for flag in flags]
 
 
+# ---------------------------------------------------------------------------
+#  Drawn rules
+#
+#  Some displays draw separator lines between their fields - the E-Jets
+#  RADIO page has two across and one down.  The WinWing hardware has no way
+#  to draw a line, and left in place they were read as text: a dash in every
+#  blank cell they crossed, a '1' wherever the vertical one ran, and the
+#  glyphs they touched misread ('XPDR' as 'XPOR').  36 characters on that
+#  page alone, in cells that are blank.
+# ---------------------------------------------------------------------------
+
+#: A rule is a straight run of ink at least this many cells long.  No glyph
+#: comes close - the longest, a dash or a box edge, stays inside its own
+#: cell - and the gaps between neighbouring glyphs break any run of them.
+_RULE_MIN_CELLS = 2.5
+
+#: ...no thicker than this fraction of a cell across the run.  A solid band
+#: is not a rule; the edge of a reverse-video block is the case in point.
+_RULE_MAX_THICKNESS = 0.15
+
+#: ...with no more than this fraction of ink along either side of it.  The
+#: margin of a reverse-video block is a long thin bright run as well, but
+#: the block itself lies along one side of it.
+_RULE_MAX_SIDE_INK = 0.3
+
+
+def brightest_channel(image: np.ndarray) -> np.ndarray:
+    """Per-pixel maximum over the colour channels."""
+    if image.ndim == 3 and image.shape[2] == 3:
+        # Several times quicker than np.max(axis=2), on every frame.
+        b, g, r = cv2.split(image)
+        return cv2.max(cv2.max(b, g), r)
+    return image.max(axis=2) if image.ndim == 3 else image
+
+
+def erase_rules(image: np.ndarray, cell_width: float, cell_height: float,
+                ink_level: float,
+                gray: Optional[np.ndarray] = None) -> np.ndarray:
+    """Paint drawn separator lines out of *image* with its background.
+
+    Returns *image* itself when there are none, and a copy otherwise.
+    *gray* is :func:`brightest_channel` of the image, if already known.
+    """
+    if gray is None:
+        gray = brightest_channel(image)
+    ink = (gray > ink_level).astype(np.uint8)
+    rules = np.zeros_like(ink)
+
+    for horizontal in (True, False):
+        length = int(round(_RULE_MIN_CELLS
+                           * (cell_width if horizontal else cell_height)))
+        if length < 3:
+            continue
+        kernel = np.ones((1, length) if horizontal else (length, 1), np.uint8)
+        runs = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(runs, 8)
+        across = cell_height if horizontal else cell_width
+        for i in range(1, count):
+            x, y, w, h = stats[i, :4]
+            if (h if horizontal else w) > max(3, _RULE_MAX_THICKNESS * across):
+                continue
+            last_row, last_col = ink.shape[0] - 1, ink.shape[1] - 1
+            if horizontal:
+                sides = (ink[max(0, y - 2), x:x + w],
+                         ink[min(last_row, y + h + 1), x:x + w])
+            else:
+                sides = (ink[y:y + h, max(0, x - 2)],
+                         ink[y:y + h, min(last_col, x + w + 1)])
+            if all(side.mean() <= _RULE_MAX_SIDE_INK for side in sides):
+                rules[labels == i] = 1
+
+    if not rules.any():
+        return image
+    # One pixel either side takes the anti-aliased fringe with it, which
+    # would otherwise linger as faint ink for the per-cell threshold to find.
+    rules = cv2.dilate(rules, np.ones((3, 3), np.uint8)).astype(bool)
+    cleaned = image.copy()
+    # The background is most of the screen, so a sample finds its colour.
+    background = np.median(image[::8, ::8][~rules[::8, ::8]], axis=0)
+    cleaned[rules] = background.astype(image.dtype)
+    return cleaned
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  EasyOCR reader with multi-GPU support
 def set_template_store(path, seed_dir=None) -> None:
@@ -337,8 +420,16 @@ class MCDUParser:
         #
         # Rounded edges give cells that differ by at most a pixel and cost no
         # interpolation at all.
-        self.image = image
         height, width = image.shape[:2]
+        max_ch = brightest_channel(image)
+        self._bg_floor = int(np.percentile(max_ch, 5))
+        # Separator lines go before anything looks at a cell: the blank
+        # test, the geometry pass and the matcher all read this image.
+        cleaned = erase_rules(image, width / columns, height / rows,
+                              self.INK_THRESHOLD + self._bg_floor, max_ch)
+        if cleaned is not image:
+            image, max_ch = cleaned, brightest_channel(cleaned)
+        self.image = image
 
         self._col_edges = [round(c * width / columns) for c in range(columns + 1)]
         self._row_edges = [round(r * height / rows) for r in range(rows + 1)]
@@ -353,10 +444,6 @@ class MCDUParser:
         # the template matcher and the learner; without this it ran three
         # times over.
         self._bin_cache: Dict[Tuple[int, int], np.ndarray] = {}
-
-        # Per-image background floor (for adaptive thresholding)
-        max_ch = np.max(image, axis=2)
-        self._bg_floor = int(np.percentile(max_ch, 5))
 
         # Midpoint between background and glyph brightness, used to tell a
         # reverse-video cell from an ordinary one.  Taken from the image
