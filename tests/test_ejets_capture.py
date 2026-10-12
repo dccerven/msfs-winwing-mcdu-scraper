@@ -1,18 +1,24 @@
 """
-Embraer E-Jets MCDU, from a real capture.
+Embraer E-Jets MCDU, from real captures of the RADIO page.
 
-tests/data/ejets_mcdu.png is the RADIO page: large green and white values
-under small labels, solid triangle arrows, symbols the CDU cannot draw, and -
-unlike every other capture here - separator lines drawn across the display.
+tests/data/ejets_window.png is the whole pop-out window as Auto Detect sees
+it: the CDU unit with its bezel, line-select keys and keyboard, the screen
+in the top half.  tests/data/ejet_mcdu.png is the screen alone, cropped by
+hand.  The page has large green and white values under small labels, solid
+triangle arrows, symbols the CDU cannot draw, and - unlike every other
+capture here - separator lines drawn across the display.
 
-What it exposed, all of it now read correctly:
+What these exposed, all of it now read correctly:
 
-* the lines were read as text - 36 characters in cells that are blank - and
-  the vertical one merged the rows it crossed, so Auto Detect cut the title
-  in half and every row after it straddled two lines of text;
+* the keyboard is a character grid of its own, and pulled Auto Detect to
+  half the screen's pitch: the grid landed over the screen's top-left
+  quarter, so the box had to be drawn by hand;
+* the separator lines were read as text - 36 characters in blank cells -
+  and the vertical one merged the rows it crossed, which also misplaced
+  the grid;
 * the solid triangles read as '→' and '>' where they point left and right;
-* the bold '0' and 'N' fill enough of their cells to pass for reverse video,
-  and were read inside out;
+* the bold '0' and 'N' fill enough of their cells to pass for reverse
+  video, and were read inside out;
 * the swap icons, the diamond and the filled square came out as '4', 'M'
   and 'O' instead of blank.
 """
@@ -29,15 +35,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 import mcdu_parser
 import mcdu_templates
 from aircraft_profiles import PROFILES
-from mcdu_detector import detect_mcdu_region
+from mcdu_detector import _find_screen, detect_mcdu_region
 from mcdu_parser import MCDUParser, erase_rules
 from mcdu_templates import TemplateMatcher
 
-CAPTURE = Path(__file__).parent / "data" / "ejets_mcdu.png"
+DATA = Path(__file__).parent / "data"
+WINDOW = DATA / "ejets_window.png"
+SCREEN = DATA / "ejet_mcdu.png"
 
-#: Where the 24x14 grid lies, (x, y, w, h).  Found by a search over origin
-#: and width for the crop that reads best; Auto Detect has to land near it.
-GRID = (7, 24, 790, 618)
+#: Where the 24x14 grid lies in the window, (x, y, w, h): the crop that
+#: reads best, which Auto Detect has to land near.
+GRID = (883, 57, 790, 618)
 
 #: The page as displayed.  '?' marks a glyph the CDU cannot draw - the swap
 #: icons, the diamond and the filled square - which must come out blank.
@@ -51,17 +59,17 @@ TRUTH = [
     "?111.50 AUTOAUTO 111.50?",
     "                        ",
     " 113.90          113.90 ",
-    "          738      XPDR ",
+    "         1661      XPDR ",
     "←TCAS/XPDR         1234→",
     "                        ",
     "?STBY TA/RA       IDENT?",
-    "YTJI                    ",
+    "KABQ                    ",
 ]
 
 
-def load():
+def load(path):
     from PIL import Image
-    return np.array(Image.open(CAPTURE).convert("RGB"))
+    return np.array(Image.open(path).convert("RGB"))
 
 
 class TestEraseRules(unittest.TestCase):
@@ -112,30 +120,29 @@ class TestEraseRules(unittest.TestCase):
         self.assertIs(self._erase(image), image)
 
 
-@unittest.skipIf(not CAPTURE.exists(), "E-Jets capture missing")
+@unittest.skipIf(not WINDOW.exists(), "E-Jets window capture missing")
 class TestEjetsDetection(unittest.TestCase):
 
-    def assertNearGrid(self, found, offset=(0, 0)):
+    def test_finds_the_screen_inside_the_unit(self):
+        x, y, w, h = _find_screen(load(WINDOW))
+        gx, gy, gw, gh = GRID
+        self.assertTrue(x <= gx and y <= gy and x + w >= gx + gw
+                        and y + h >= gy + gh, f"screen {(x, y, w, h)}")
+
+    def test_finds_the_grid_not_the_keyboard(self):
+        found = detect_mcdu_region(load(WINDOW))
         self.assertIsNotNone(found, "nothing detected")
-        want = (GRID[0] + offset[0], GRID[1] + offset[1], GRID[2], GRID[3])
-        for got, expected, name in zip(found, want, "xywh"):
-            self.assertLessEqual(abs(got - expected), 4,
-                                 f"{name}: got {found}, want about {want}")
-
-    def test_finds_the_grid(self):
-        self.assertNearGrid(detect_mcdu_region(load()))
-
-    def test_finds_the_grid_inside_a_larger_window(self):
-        """As captured live: the pop-out is wider than the display."""
-        image = load()
-        window = np.zeros((800, 1700, 3), np.uint8)
-        window[51:51 + image.shape[0], 882:882 + image.shape[1]] = image
-        self.assertNearGrid(detect_mcdu_region(window), offset=(882, 51))
+        for got, want, name in zip(found, GRID, "xywh"):
+            self.assertLessEqual(abs(got - want), 4,
+                                 f"{name}: got {found}, want about {GRID}")
 
 
-@unittest.skipIf(not CAPTURE.exists(), "E-Jets capture missing")
-class TestEjetsCapture(unittest.TestCase):
-    """A cold first read on the detected grid, as a first frame would be."""
+class _ReadsThePage:
+    """A cold first read, as a new user's first frame would be."""
+
+    @classmethod
+    def crop(cls):
+        raise NotImplementedError
 
     @classmethod
     def setUpClass(cls):
@@ -150,11 +157,8 @@ class TestEjetsCapture(unittest.TestCase):
         mcdu_templates._template_matcher = TemplateMatcher(
             template_path=Path(cls._tmpdir.name) / "ejets.npz",
             seed_dir=PROFILES["ejets"].seed_dir())
-        image = load()
-        x, y, w, h = detect_mcdu_region(image)
-        cls.parser = MCDUParser(image[y:y + h, x:x + w], columns=24, rows=14,
-                                source_id="ejets")
-        cls.parsed = cls.parser.parse_grid()
+        cls.parsed = MCDUParser(cls.crop(), columns=24, rows=14,
+                                source_id=cls.__name__).parse_grid()
 
     @classmethod
     def tearDownClass(cls):
@@ -170,16 +174,11 @@ class TestEjetsCapture(unittest.TestCase):
         cell = self.parsed[row * 24 + col]
         return cell[0] if cell else " "
 
-    def _row(self, row):
-        return "".join(self._got(row, col) for col in range(24))
-
     def test_characters_read_back(self):
         errors = [f"R{row:02d}C{col:02d} {want!r}->{self._got(row, col)!r}"
                   for row, line in enumerate(TRUTH)
                   for col, want in enumerate(line)
                   if want not in " ?" and self._got(row, col) != want]
-        # 119 of 130 when this capture was added; every one since the
-        # lines, the arrows, reverse video and Auto Detect were fixed.
         self.assertEqual(errors, [])
 
     def test_separator_lines_are_not_read_as_text(self):
@@ -204,3 +203,23 @@ class TestEjetsCapture(unittest.TestCase):
         inverted = [(row, col) for row in range(14) for col in range(24)
                     if len(self.parsed[row * 24 + col]) > 3]
         self.assertEqual(inverted, [])
+
+
+@unittest.skipIf(not WINDOW.exists(), "E-Jets window capture missing")
+class TestEjetsWindowRead(_ReadsThePage, unittest.TestCase):
+    """The live path: Auto Detect on the whole window, then read."""
+
+    @classmethod
+    def crop(cls):
+        image = load(WINDOW)
+        x, y, w, h = detect_mcdu_region(image)
+        return image[y:y + h, x:x + w]
+
+
+@unittest.skipIf(not SCREEN.exists(), "E-Jets screen capture missing")
+class TestEjetsHandCropRead(_ReadsThePage, unittest.TestCase):
+    """A box drawn by hand around the text, a few pixels off the grid."""
+
+    @classmethod
+    def crop(cls):
+        return load(SCREEN)

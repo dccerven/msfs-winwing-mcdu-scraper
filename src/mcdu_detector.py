@@ -651,6 +651,51 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     return (x, y, w, h)
 
 
+#: Background a screen is drawn on: near black.  The E-Jets bezel and keys
+#: sit at 25, so this keeps them out.
+_SCREEN_DARK = 8
+
+#: Smallest share of the image an enclosed screen can take.
+_SCREEN_MIN_AREA = 0.05
+
+
+def _find_screen(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    """The display, when the capture holds a whole CDU rather than a screen.
+
+    Some pop-outs draw the unit: bezel, line-select keys and a keyboard of
+    light letters on dark buttons.  The keyboard is a character grid of its
+    own, and on the E-Jets it pulled the pitch to half the screen's - the
+    grid came back a quarter the size of the display, over its top-left
+    corner.  The screen is told apart by being a dark area *enclosed* by
+    the bezel: the window's own background is dark too, but runs out to
+    the image edge.
+
+    Returns its bounding box, or None when there is no such area - a crop of
+    the screen alone, or a pop-out with no bezel.
+    """
+    gray = np.max(image, axis=2) if image.ndim == 3 else image
+    height, width = gray.shape[:2]
+    dark = (gray <= _SCREEN_DARK).astype(np.uint8)
+    # Close over separator lines, which could otherwise cut the screen into
+    # pieces.  Text needs nothing: glyphs are islands, not walls.  Kept to
+    # the width of a rule, because the E-Jets bezel above the screen is
+    # only 8px, and closing across it joins the screen to the window's own
+    # dark background.
+    size = _RULE_MAX_THICKNESS + 1
+    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((size, size), np.uint8))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=4)
+    best = None
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if x == 0 or y == 0 or x + w >= width or y + h >= height:
+            continue
+        if area < _SCREEN_MIN_AREA * height * width:
+            continue
+        if best is None or area > best[4]:
+            best = (x, y, w, h, area)
+    return None if best is None else tuple(int(v) for v in best[:4])
+
+
 # ------------------------------------------------------------------
 #  Public API
 # ------------------------------------------------------------------
@@ -689,28 +734,55 @@ def detect_mcdu_region(
     Returns:
         ``(x, y, width, height)`` in pixel coordinates, or ``None``.
     """
-    total_area = image.shape[0] * image.shape[1]
-
-    grid = _detect_via_pitch(image, columns, rows)
-    if grid is not None:
-        gx, gy, gw, gh = grid
-        area_frac = (gw * gh) / total_area
-        aspect = gw / max(gh, 1)
-        if (min_area_frac <= area_frac <= max_area_frac
-                and _ASPECT_MIN <= aspect <= _ASPECT_MAX):
+    # A whole CDU unit in the capture: look for the grid on its screen only,
+    # and fall back to the whole image if that finds nothing.
+    screen = _find_screen(image)
+    if screen is not None:
+        sx, sy, sw, sh = screen
+        found = _accept_grid(_detect_via_pitch(image[sy:sy + sh, sx:sx + sw],
+                                               columns, rows),
+                             sw * sh, columns, rows, min_area_frac,
+                             max_area_frac)
+        if found is not None:
+            gx, gy, gw, gh = found
+            grid = (gx + sx, gy + sy, gw, gh)
             logger.info(
-                "Detected MCDU grid by pitch: x=%d, y=%d, w=%d, h=%d "
-                "(cell %.2fx%.2f px)",
-                gx, gy, gw, gh, gw / columns, gh / rows,
+                "Detected MCDU grid by pitch on the screen at x=%d y=%d: "
+                "x=%d, y=%d, w=%d, h=%d (cell %.2fx%.2f px)",
+                sx, sy, *grid, gw / columns, gh / rows,
             )
             return grid
-        logger.debug(
-            "Pitch detection rejected: area_frac=%.3f aspect=%.2f",
-            area_frac, aspect,
+
+    grid = _accept_grid(_detect_via_pitch(image, columns, rows),
+                        image.shape[0] * image.shape[1], columns, rows,
+                        min_area_frac, max_area_frac)
+    if grid is not None:
+        gx, gy, gw, gh = grid
+        logger.info(
+            "Detected MCDU grid by pitch: x=%d, y=%d, w=%d, h=%d "
+            "(cell %.2fx%.2f px)",
+            gx, gy, gw, gh, gw / columns, gh / rows,
         )
+        return grid
 
     logger.info(
         "Auto-detect found no character lattice. The caller should ask for "
         "the region to be drawn by hand."
     )
+    return None
+
+
+def _accept_grid(grid, total_area: int, columns: int, rows: int,
+                 min_area_frac: float, max_area_frac: float):
+    """*grid* if its size and shape are plausible, otherwise None."""
+    if grid is None:
+        return None
+    gx, gy, gw, gh = grid
+    area_frac = (gw * gh) / total_area
+    aspect = gw / max(gh, 1)
+    if (min_area_frac <= area_frac <= max_area_frac
+            and _ASPECT_MIN <= aspect <= _ASPECT_MAX):
+        return grid
+    logger.debug("Pitch detection rejected: area_frac=%.3f aspect=%.2f",
+                 area_frac, aspect)
     return None
