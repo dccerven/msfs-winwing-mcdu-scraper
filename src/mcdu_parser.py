@@ -457,15 +457,47 @@ class MCDUParser:
     def _extract_row_image(self, row: int) -> np.ndarray:
         return self.image[self._row_edges[row]:self._row_edges[row + 1], :]
 
+    #: Grey text needs only this much over the background to count as ink.
+    DIM_INK_CONTRAST = 25
+
+    #: ...but only in a cell whose brightest pixel is at least this far over
+    #: the background.  The E-Jets' grey prompts peak 78-89 above it; the
+    #: glow that bleeds into a blank A330 cell from its neighbour peaks at
+    #: 39, and must stay blank.
+    DIM_INK_MIN_PEAK = 55
+
+    def _ink_level(self, gray: np.ndarray) -> float:
+        """Brightness that separates ink from background in *gray*.
+
+        The fixed INK_THRESHOLD, except for a cell whose brightest ink barely
+        clears it.  The E-Jets draws unavailable prompts in grey that peaks
+        at 78-89 over a black screen: under the fixed 80 the F of FORECAST
+        had no ink at all, and DES FORECAST read as OES CAAT.  Such a cell is
+        cut halfway up to its own peak instead.  A bright glyph keeps the
+        fixed level, so nothing white or coloured is binarised differently.
+        """
+        fixed = self.INK_THRESHOLD + self._bg_floor
+        peak = float(gray.max()) if gray.size else 0.0
+        if (peak > fixed + self.DIM_INK_CONTRAST
+                or peak < self._bg_floor + self.DIM_INK_MIN_PEAK):
+            return float(fixed)
+        return max(self._bg_floor + self.DIM_INK_CONTRAST,
+                   self._bg_floor + 0.5 * (peak - self._bg_floor))
+
     # ------------------------------------------------------------------
     #  Colour detection
     # ------------------------------------------------------------------
     def detect_color(self, cell: np.ndarray) -> str:
         gray = np.max(cell, axis=2)
-        ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        bright_mask = gray > ink_threshold
-        if not np.any(bright_mask):
+        level = self._ink_level(gray)
+        if not np.any(gray > level):
             return "w"
+        # Judge the colour on the cores of the strokes.  Every pixel above
+        # the ink level includes the anti-aliased fringe, and on a thin
+        # white glyph - the V of the E-Jets' small NAV1 - the fringe pulled
+        # the median under 150, into grey.
+        core = (level + float(gray.max())) / 2.0
+        bright_mask = gray >= core
 
         bright_pixels = cell[bright_mask]
         # Median is more robust to stray noise/outlier pixels than mean.
@@ -536,8 +568,8 @@ class MCDUParser:
         if avg >= threshold:
             return False
         gray = np.max(cell, axis=2)
-        ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        ink_ratio = np.count_nonzero(gray > ink_threshold) / max(gray.size, 1)
+        ink_ratio = (np.count_nonzero(gray > self._ink_level(gray))
+                     / max(gray.size, 1))
         return ink_ratio < self.MIN_INK_RATIO
 
     # ------------------------------------------------------------------
@@ -563,7 +595,10 @@ class MCDUParser:
         gray = np.max(cell, axis=2)
         if inverted:
             gray = 255 - gray
-        ink_threshold = self.INK_THRESHOLD + self._bg_floor
+        ink_threshold = self._ink_level(gray)
+        if ink_threshold < self.INK_THRESHOLD + self._bg_floor:
+            # Grey text: Otsu would split it at its own fringe.
+            return ink_threshold
         level, _ = cv2.threshold(gray, 0, 255,
                                  cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         if level < ink_threshold * 0.5 or level > 220:
@@ -1123,7 +1158,7 @@ class MCDUParser:
                 # and since their answer now outranks both engines, the
                 # UNS-1's inverted ACCEPT prompt lost its arrow.
                 gray = 255 - gray
-            ink_threshold = self.INK_THRESHOLD + self._bg_floor
+            ink_threshold = self._ink_level(gray)
             _, binary = cv2.threshold(gray, ink_threshold, 255,
                                       cv2.THRESH_BINARY)
             contours, hierarchy = cv2.findContours(

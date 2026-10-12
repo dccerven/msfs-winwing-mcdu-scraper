@@ -533,6 +533,24 @@ def _chrome_bottom(image: np.ndarray) -> int:
     return bottom
 
 
+def _fit_pitch(pitch: Optional[float], cells: int,
+               extent: int) -> Optional[float]:
+    """The pitch, divided down until *cells* of it fit in *extent* pixels.
+
+    Spacings between text lines are whole multiples of the pitch, and a
+    page that writes only every other row - the E-Jets PERF INDEX: a title
+    and six prompts - has no spacing of one row at all.  Its 88px gaps read
+    as an 88px pitch, which fourteen rows of could never fit on its 683px
+    screen.  The gap is then two rows, or three, whichever first fits.
+    """
+    if pitch is None or pitch <= 0:
+        return pitch
+    multiple = 1
+    while cells * pitch / multiple > extent + 1 and multiple < 4:
+        multiple += 1
+    return pitch / multiple
+
+
 def _detect_via_pitch(image: np.ndarray, columns: int,
                       rows: int) -> Optional[Tuple[int, int, int, int]]:
     """Locate the character grid by its pitch.  Returns (x, y, width, height)."""
@@ -578,7 +596,7 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
 
     row_centers = [(top + bottom) / 2.0 for top, bottom in row_bounds]
     row_gaps = np.diff(np.asarray(row_centers, float))
-    row_pitch = _pitch_from_spacings(row_gaps)
+    row_pitch = _fit_pitch(_pitch_from_spacings(row_gaps), rows, height)
     if row_pitch is None:
         return None
 
@@ -586,7 +604,9 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     # text rows end up wholly inside a cell.  Picking by a fixed rule instead
     # meant every display that suited one estimator broke the other; this
     # decides per capture and cannot regress one that already works.
-    alternative = _pitch_by_total_span(row_gaps, float(np.median(row_gaps)))
+    alternative = _fit_pitch(
+        _pitch_by_total_span(row_gaps, float(np.median(row_gaps))),
+        rows, height)
     if alternative is not None and abs(alternative - row_pitch) > 0.5:
         best_pitch, best_score = row_pitch, -1
         for candidate in (row_pitch, alternative):
@@ -604,7 +624,7 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     if not per_row:
         return None
     spacings = np.concatenate([np.diff(np.asarray(c, float)) for c in per_row])
-    col_pitch = _pitch_from_spacings(spacings)
+    col_pitch = _fit_pitch(_pitch_from_spacings(spacings), columns, width)
     if col_pitch is None:
         return None
     col_pitch = _refine_pitch_over_baselines(per_row, col_pitch)
@@ -734,8 +754,10 @@ def detect_mcdu_region(
     Returns:
         ``(x, y, width, height)`` in pixel coordinates, or ``None``.
     """
-    # A whole CDU unit in the capture: look for the grid on its screen only,
-    # and fall back to the whole image if that finds nothing.
+    # A whole CDU unit in the capture: look for the grid on its screen only.
+    # No falling back to the whole image when that fails - with a keyboard
+    # in view the whole image's lattice is the keyboard's, and a wrong grid
+    # that looks plausible is worse than asking for the box by hand.
     screen = _find_screen(image)
     if screen is not None:
         sx, sy, sw, sh = screen
@@ -752,6 +774,9 @@ def detect_mcdu_region(
                 sx, sy, *grid, gw / columns, gh / rows,
             )
             return grid
+        logger.info("Found the screen at x=%d y=%d w=%d h=%d but no character "
+                    "lattice on it.", sx, sy, sw, sh)
+        return None
 
     grid = _accept_grid(_detect_via_pitch(image, columns, rows),
                         image.shape[0] * image.shape[1], columns, rows,

@@ -24,14 +24,21 @@ from mcdu_templates import SEED_ROOT, TemplateMatcher, seed_binaries, seed_char
 EJETS = SEED_ROOT / "ejets"
 
 #: Seed files for glyphs the CDU cannot draw: matched so they read as blank.
-UNDRAWN_FILES = {"ampersand", "ampersand_large", "square_filled",
+UNDRAWN_FILES = {"ampersand", "ampersand_large", "percent", "square_filled",
                  "swap_arrows", "arrow_left_right_small"}
 
 
 def _png_binary(name):
+    """The seed's ink at the middle threshold, as the loader reads it."""
     path = next(EJETS.rglob(f"{name}.png"))
-    alpha = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[..., 3]
-    return (alpha > 127).astype(np.uint8) * 255
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if image.ndim == 3 and image.shape[2] == 4:
+        ink = image[..., 3]
+    elif image.ndim == 3:
+        ink = image.max(axis=2)
+    else:
+        ink = image
+    return (ink > 127).astype(np.uint8) * 255
 
 
 class TestSeedNames(unittest.TestCase):

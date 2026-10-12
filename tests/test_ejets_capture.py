@@ -1,26 +1,28 @@
 """
-Embraer E-Jets MCDU, from real captures of the RADIO page.
+Embraer E-Jets MCDU, from real captures.
 
-tests/data/ejets_window.png is the whole pop-out window as Auto Detect sees
-it: the CDU unit with its bezel, line-select keys and keyboard, the screen
-in the top half.  tests/data/ejet_mcdu.png is the screen alone, cropped by
-hand.  The page has large green and white values under small labels, solid
-triangle arrows, symbols the CDU cannot draw, and - unlike every other
-capture here - separator lines drawn across the display.
+The tests/data/ejets_window_*.png captures are the whole pop-out window as
+Auto Detect sees it: the CDU unit with its bezel, line-select keys and
+keyboard, the screen in the top half.  tests/data/ejet_mcdu.png is the RADIO
+screen alone, cropped by hand.
 
 What these exposed, all of it now read correctly:
 
 * the keyboard is a character grid of its own, and pulled Auto Detect to
   half the screen's pitch: the grid landed over the screen's top-left
   quarter, so the box had to be drawn by hand;
-* the separator lines were read as text - 36 characters in blank cells -
-  and the vertical one merged the rows it crossed, which also misplaced
-  the grid;
+* a page that writes only every other row (PERF INDEX) had no one-row
+  spacing at all, and its two-row gaps were taken for the pitch;
+* the RADIO page's separator lines were read as text - 36 characters in
+  blank cells - and the vertical one merged the rows it crossed;
 * the solid triangles read as '→' and '>' where they point left and right;
 * the bold '0' and 'N' fill enough of their cells to pass for reverse
   video, and were read inside out;
-* the swap icons, the diamond and the filled square came out as '4', 'M'
-  and 'O' instead of blank.
+* grey (unavailable) prompts peak at 78-89, under the fixed ink threshold,
+  and DES FORECAST read as OES CAAT;
+* the fringe of thin white glyphs coloured them grey;
+* the swap icons, the diamond, the filled square and '%' came out as
+  letters instead of blank.
 """
 
 import tempfile
@@ -40,16 +42,12 @@ from mcdu_parser import MCDUParser, erase_rules
 from mcdu_templates import TemplateMatcher
 
 DATA = Path(__file__).parent / "data"
-WINDOW = DATA / "ejets_window.png"
 SCREEN = DATA / "ejet_mcdu.png"
 
-#: Where the 24x14 grid lies in the window, (x, y, w, h): the crop that
-#: reads best, which Auto Detect has to land near.
-GRID = (883, 57, 790, 618)
+# Each page as displayed.  '?' marks a glyph the CDU cannot draw - the swap
+# icons, the diamond, the filled square, '%' - which must come out blank.
 
-#: The page as displayed.  '?' marks a glyph the CDU cannot draw - the swap
-#: icons, the diamond and the filled square - which must come out blank.
-TRUTH = [
+RADIO = [
     "         RADIO       1/2",
     " COM1              COM2 ",
     "?124.000        124.850?",
@@ -65,6 +63,65 @@ TRUTH = [
     "?STBY TA/RA       IDENT?",
     "KABQ                    ",
 ]
+
+PERF_INDEX = [
+    "       PERF INDEX    1/2",
+    "                        ",
+    "←PERF INIT      TAKEOFF→",
+    "                        ",
+    "←DEP LIM          CLIMB→",
+    "                        ",
+    "←CRUISE    DES FORECAST→",
+    "                        ",
+    "←DESCENT        APP SPD→",
+    "                        ",
+    "←LANDING         GA LIM→",
+    "                        ",
+    "←PERF PLAN    PERF DATA→",
+    "                        ",
+]
+
+#: Colours on PERF INDEX: 'e' is grey, an unavailable prompt.
+PERF_INDEX_COLOURS = [
+    ".......wwww.wwwww....www",
+    "........................",
+    "wwwww.wwww......wwwwwwww",
+    "........................",
+    "wwww.www..........wwwwww",
+    "........................",
+    "wwwwwww....eee.eeeeeeeee",
+    "........................",
+    "wwwwwwww........www.wwww",
+    "........................",
+    "wwwwwwww.........ee.eeee",
+    "........................",
+    "eeeee.eeee....wwww.wwwww",
+    "........................",
+]
+
+PERF_INIT = [
+    " PERFORMANCE INIT-LB 2/3",
+    " CRZ ALT       STEP INC ",
+    "☐☐☐☐☐                  0",
+    " CRZ WINDS      ISA DEV ",
+    "000T/00             +0°C",
+    "                    ZFW ",
+    "                   ☐☐☐☐☐",
+    "           (GAUGE) FUEL ",
+    "            (5000)  5000",
+    " TO CG        GROSS WT  ",
+    "☐☐.☐?                   ",
+    "                        ",
+    "                        ",
+    "                        ",
+]
+
+#: window capture -> (grid Auto Detect must land near, page text)
+WINDOWS = {
+    "ejets_window_radio.png": ((883, 57, 790, 618), RADIO),
+    "ejets_window_perf_index.png": ((880, 57, 794, 621), PERF_INDEX),
+    "ejets_window_perf_init.png": ((881, 57, 794, 618), PERF_INIT),
+}
 
 
 def load(path):
@@ -120,25 +177,29 @@ class TestEraseRules(unittest.TestCase):
         self.assertIs(self._erase(image), image)
 
 
-@unittest.skipIf(not WINDOW.exists(), "E-Jets window capture missing")
 class TestEjetsDetection(unittest.TestCase):
 
-    def test_finds_the_screen_inside_the_unit(self):
-        x, y, w, h = _find_screen(load(WINDOW))
-        gx, gy, gw, gh = GRID
-        self.assertTrue(x <= gx and y <= gy and x + w >= gx + gw
-                        and y + h >= gy + gh, f"screen {(x, y, w, h)}")
-
     def test_finds_the_grid_not_the_keyboard(self):
-        found = detect_mcdu_region(load(WINDOW))
-        self.assertIsNotNone(found, "nothing detected")
-        for got, want, name in zip(found, GRID, "xywh"):
-            self.assertLessEqual(abs(got - want), 4,
-                                 f"{name}: got {found}, want about {GRID}")
+        for name, (grid, _) in WINDOWS.items():
+            if not (DATA / name).exists():
+                continue
+            with self.subTest(name):
+                image = load(DATA / name)
+                x, y, w, h = _find_screen(image)
+                gx, gy, gw, gh = grid
+                self.assertTrue(x <= gx and y <= gy and x + w >= gx + gw
+                                and y + h >= gy + gh, f"screen {(x, y, w, h)}")
+                found = detect_mcdu_region(image)
+                self.assertIsNotNone(found, "nothing detected")
+                for got, want, axis in zip(found, grid, "xywh"):
+                    self.assertLessEqual(abs(got - want), 4,
+                                         f"{axis}: got {found}, want about {grid}")
 
 
 class _ReadsThePage:
     """A cold first read, as a new user's first frame would be."""
+
+    truth = RADIO
 
     @classmethod
     def crop(cls):
@@ -146,7 +207,7 @@ class _ReadsThePage:
 
     @classmethod
     def setUpClass(cls):
-        for line in TRUTH:
+        for line in cls.truth:
             assert len(line) == 24, line
         cls._tmpdir = tempfile.TemporaryDirectory()
         cls._saved = (mcdu_templates._template_matcher,
@@ -174,51 +235,84 @@ class _ReadsThePage:
         cell = self.parsed[row * 24 + col]
         return cell[0] if cell else " "
 
+    def _cells(self, wanted):
+        return [(row, col, want) for row, line in enumerate(self.truth)
+                for col, want in enumerate(line) if wanted(want)]
+
     def test_characters_read_back(self):
         errors = [f"R{row:02d}C{col:02d} {want!r}->{self._got(row, col)!r}"
-                  for row, line in enumerate(TRUTH)
-                  for col, want in enumerate(line)
-                  if want not in " ?" and self._got(row, col) != want]
+                  for row, col, want in self._cells(lambda c: c not in " ?")
+                  if self._got(row, col) != want]
         self.assertEqual(errors, [])
 
-    def test_separator_lines_are_not_read_as_text(self):
+    def test_blank_cells_stay_blank(self):
         junk = [f"R{row:02d}C{col:02d} {self._got(row, col)!r}"
-                for row, line in enumerate(TRUTH)
-                for col, want in enumerate(line)
-                if want == " " and self._got(row, col) != " "]
+                for row, col, _ in self._cells(lambda c: c == " ")
+                if self._got(row, col) != " "]
         self.assertEqual(junk, [])
 
     def test_undrawable_symbols_come_out_blank(self):
         stray = [f"R{row:02d}C{col:02d} {self._got(row, col)!r}"
-                 for row, line in enumerate(TRUTH)
-                 for col, want in enumerate(line)
-                 if want == "?" and self._got(row, col) != " "]
+                 for row, col, _ in self._cells(lambda c: c == "?")
+                 if self._got(row, col) != " "]
         self.assertEqual(stray, [])
 
-    def test_solid_triangles_are_arrows(self):
-        self.assertEqual(self._got(10, 0), "←")
-        self.assertEqual(self._got(10, 23), "→")
-
-    def test_bold_glyphs_are_not_reverse_video(self):
+    def test_nothing_reads_as_reverse_video(self):
         inverted = [(row, col) for row in range(14) for col in range(24)
                     if len(self.parsed[row * 24 + col]) > 3]
         self.assertEqual(inverted, [])
 
 
-@unittest.skipIf(not WINDOW.exists(), "E-Jets window capture missing")
-class TestEjetsWindowRead(_ReadsThePage, unittest.TestCase):
+class _WindowRead(_ReadsThePage):
     """The live path: Auto Detect on the whole window, then read."""
+
+    window = ""
+
+    @classmethod
+    def setUpClass(cls):
+        if not (DATA / cls.window).exists():
+            raise unittest.SkipTest(f"{cls.window} missing")
+        cls.truth = WINDOWS[cls.window][1]
+        super().setUpClass()
 
     @classmethod
     def crop(cls):
-        image = load(WINDOW)
+        image = load(DATA / cls.window)
         x, y, w, h = detect_mcdu_region(image)
         return image[y:y + h, x:x + w]
 
 
+class TestRadioWindow(_WindowRead, unittest.TestCase):
+    window = "ejets_window_radio.png"
+
+    def test_solid_triangles_are_arrows(self):
+        self.assertEqual(self._got(10, 0), "←")
+        self.assertEqual(self._got(10, 23), "→")
+
+
+class TestPerfInitWindow(_WindowRead, unittest.TestCase):
+    window = "ejets_window_perf_init.png"
+
+
+class TestPerfIndexWindow(_WindowRead, unittest.TestCase):
+    window = "ejets_window_perf_index.png"
+
+    def test_grey_prompts_are_grey_and_white_ones_white(self):
+        wrong = []
+        for row, line in enumerate(PERF_INDEX_COLOURS):
+            for col, want in enumerate(line):
+                cell = self.parsed[row * 24 + col]
+                if want != "." and (not cell or cell[1] != want):
+                    got = cell[1] if cell else "blank"
+                    wrong.append(f"R{row:02d}C{col:02d} {want}->{got}")
+        self.assertEqual(wrong, [])
+
+
 @unittest.skipIf(not SCREEN.exists(), "E-Jets screen capture missing")
-class TestEjetsHandCropRead(_ReadsThePage, unittest.TestCase):
+class TestRadioHandCrop(_ReadsThePage, unittest.TestCase):
     """A box drawn by hand around the text, a few pixels off the grid."""
+
+    truth = RADIO
 
     @classmethod
     def crop(cls):

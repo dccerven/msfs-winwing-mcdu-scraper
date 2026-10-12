@@ -150,6 +150,22 @@ class TestCoordinateConversion(unittest.TestCase):
         crop = (200, 160, 480, 280)
         self.assertEqual(sel.to_original(sel.from_original(crop)), crop)
 
+    def test_round_trip_is_exact_at_any_scale(self):
+        """Auto Detect's grid must reach the scraper unmoved.
+
+        The E-Jets pop-out is 2560 wide, so the preview is scaled by an
+        awkward factor, and the grid at 883,57 came back as 882,54.
+        """
+        sel = RegionSelection((2560, 1392), (1200, 800))
+        crop = (883, 57, 790, 618)
+        self.assertEqual(sel.to_original(sel.from_original(crop)), crop)
+
+    def test_moving_the_box_drops_the_exact_crop(self):
+        sel = RegionSelection((2560, 1392), (1200, 800))
+        rect = sel.from_original((883, 57, 790, 618))
+        moved = Rect(rect.x1 + 10, rect.y1, rect.x2 + 10, rect.y2)
+        self.assertGreater(sel.to_original(moved)[0], 883 + 10)
+
     def test_round_trip_on_unscaled_image(self):
         sel = RegionSelection((900, 700), (1000, 1000))
         crop = (10, 20, 480, 280)

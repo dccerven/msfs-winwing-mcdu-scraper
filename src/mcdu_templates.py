@@ -80,7 +80,8 @@ SEED_NAMES: Dict[str, str] = {
 #: loaded: a cell that matches one is left blank, where otherwise EasyOCR
 #: put a letter there ('4' for the E-Jets swap icon) and could learn it.
 UNDRAWN_NAMES = frozenset({
-    "ampersand", "arrow_left_right_small", "square_filled", "swap_arrows",
+    "ampersand", "arrow_left_right_small", "percent", "square_filled",
+    "swap_arrows",
 })
 
 #: Alpha levels a seed is binarised at.  A capture is anti-aliased and the

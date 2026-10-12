@@ -123,6 +123,9 @@ class RegionSelection:
         # Never scale up: a small window stays pixel-for-pixel.
         self.scale_factor = min(max_w / orig_w, max_h / orig_h, 1.0)
         self.original_size = (orig_w, orig_h)
+        # The last crop placed by from_original, and where it landed on the
+        # preview.  See to_original.
+        self._placed: Optional[Tuple[Rect, Tuple[int, int, int, int]]] = None
 
     @property
     def display_size(self) -> Tuple[int, int]:
@@ -133,8 +136,17 @@ class RegionSelection:
         return (int(w * self.scale_factor), int(h * self.scale_factor))
 
     def to_original(self, rect: Rect) -> Tuple[int, int, int, int]:
-        """Convert a display-space rect to an (x, y, width, height) crop."""
+        """Convert a display-space rect to an (x, y, width, height) crop.
+
+        A rect still exactly where from_original put it gives back that crop
+        unchanged.  A preview pixel covers two or more original ones, so the
+        round trip through it moved Auto Detect's grid by up to three
+        pixels: 883,57 came back as 882,54, and on the E-Jets every row then
+        caught the tops of the large glyphs in the row below as dashes.
+        """
         r = rect.normalised()
+        if self._placed is not None and self._placed[0] == r:
+            return self._placed[1]
         return (
             int(r.x1 / self.scale_factor),
             int(r.y1 / self.scale_factor),
@@ -145,12 +157,14 @@ class RegionSelection:
     def from_original(self, crop: Tuple[int, int, int, int]) -> Rect:
         """Convert an (x, y, width, height) crop to a display-space rect."""
         x, y, w, h = crop
-        return Rect(
+        rect = Rect(
             int(x * self.scale_factor),
             int(y * self.scale_factor),
             int((x + w) * self.scale_factor),
             int((y + h) * self.scale_factor),
         )
+        self._placed = (rect, tuple(crop))
+        return rect
 
     def default_rect(self, margin: float = 0.20) -> Rect:
         """A centred starting selection covering the middle of the preview."""

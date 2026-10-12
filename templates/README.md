@@ -89,10 +89,15 @@ loaded.
 | `degree` | ° | `period` | . |
 | `plus` | + | `slash` | / |
 
-- Names the CDU cannot draw are ignored. In the E-Jets set these are
-  `ampersand`, `equals`, `square_filled`, `swap_arrows` and
-  `arrow_left_right_small`. The renderable set is `RENDERABLE` in
-  [`mcdu_charset.py`](../src/mcdu_charset.py).
+- Some glyphs on the display have nothing the CDU can draw for them.
+  Their seeds are still loaded, so a cell that matches one is left blank
+  instead of EasyOCR putting a wrong letter there. In the E-Jets set these
+  are `ampersand`, `percent`, `square_filled`, `swap_arrows` and
+  `arrow_left_right_small`; the list is `UNDRAWN_NAMES` in
+  [`mcdu_templates.py`](../src/mcdu_templates.py).
+- `equals` names `=`, which the CDU shows as `-` (see `SUBSTITUTIONS` in
+  [`mcdu_charset.py`](../src/mcdu_charset.py)). The drawable set is
+  `RENDERABLE` in the same file.
 - `tests/test_seed_glyphs.py` fails if a file name in `ejets/` is not
   understood, so a misspelt name doesn't get skipped without anyone noticing.
 
