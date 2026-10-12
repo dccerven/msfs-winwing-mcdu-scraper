@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['src\\gui.py'],
+    ['src/gui.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('config.yaml.example', '.')],
+    datas=[('config.yaml.example', '.'), ('templates/ejets', 'templates/ejets')],
     hiddenimports=['numpy', 'cv2', 'yaml', 'win32gui', 'win32ui', 'win32con', 'win32api', 'windows_capture'],
     hookspath=[],
     hooksconfig={},

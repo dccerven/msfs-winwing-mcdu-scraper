@@ -21,18 +21,99 @@ changing anything:
   once thought safe on the grounds that the character set was by then
   mostly covered; a real session grew its store from 80 to 126 templates
   while it ran and read worse with every one (ISSUES.md #25).
+
+A profile may also ship *seed* glyphs: PNGs captured by hand from the real
+display, under templates/<profile>/.  They are matched alongside the learned
+store but never saved into it, so the PNGs stay the source of truth, and a
+seed vetoes learning a glyph under a different label - a learned store has
+been found holding a '4' filed under 'R'.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
+from mcdu_charset import ARROW_LEFT, ARROW_RIGHT, BALLOT_BOX, DEGREE, RENDERABLE
+
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Seed glyphs
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Where seed folders live.  A frozen build unpacks bundled data under
+#: _MEIPASS rather than beside the source.
+SEED_ROOT = (Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+             / "templates")
+
+#: File stems for characters a filename cannot hold.  A stem that is a
+#: single character names itself; a '_large' suffix marks the large font
+#: and is dropped, since size is read from the row and not the glyph.
+SEED_NAMES: Dict[str, str] = {
+    "arrow_left": ARROW_LEFT,
+    "arrow_right": ARROW_RIGHT,
+    "box": BALLOT_BOX,
+    "dash": "-",
+    "degree": DEGREE,
+    "greater_than": ">",
+    "less_than": "<",
+    "paren_left": "(",
+    "paren_right": ")",
+    "period": ".",
+    "plus": "+",
+    "slash": "/",
+    "bracket_left": "[",
+    "bracket_right": "]",
+}
+
+#: Alpha levels a seed is binarised at.  A capture is anti-aliased and the
+#: parser's threshold is not, so one cut-off gives one stroke weight; three
+#: cover the weights real cells come out at.  Measured against 121 glyphs
+#: learned in a real session, three cut-offs accepted 38 where one
+#: accepted 26.  The one disagreement either made was that store's own
+#: '4' filed as 'R', not a seed's mistake.
+_SEED_THRESHOLDS = (64, 127, 192)
+
+
+def seed_char(stem: str) -> Optional[str]:
+    """The character a seed file names, or None if the CDU cannot draw it."""
+    if stem.endswith("_large"):
+        stem = stem[: -len("_large")]
+    char = stem.upper() if len(stem) == 1 else SEED_NAMES.get(stem)
+    return char if char in RENDERABLE else None
+
+
+def seed_binaries(seed_dir: Path) -> Iterator[Tuple[str, np.ndarray]]:
+    """Yield ``(char, binary)`` for every usable PNG under *seed_dir*.
+
+    Ink is taken from the alpha channel when there is one - captures cut
+    out of the display carry the glyph there over a flat colour - and from
+    brightness otherwise.
+    """
+    for path in sorted(Path(seed_dir).rglob("*.png")):
+        char = seed_char(path.stem)
+        if char is None:
+            logger.debug("Seed %s names nothing the CDU draws; skipped", path.name)
+            continue
+        image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            logger.warning("Could not read seed %s", path)
+            continue
+        if image.ndim == 3 and image.shape[2] == 4:
+            ink = image[..., 3]
+        elif image.ndim == 3:
+            ink = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            ink = image
+        for level in _SEED_THRESHOLDS:
+            yield char, (ink > level).astype(np.uint8) * 255
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -74,16 +155,21 @@ class TemplateMatcher:
         Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
     )
 
-    def __init__(self, template_path: Optional[Path] = None) -> None:
+    def __init__(self, template_path: Optional[Path] = None,
+                 seed_dir: Optional[Path] = None) -> None:
         """
         Args:
             template_path: Where to load/save learned glyphs.  Defaults to
                 ``DEFAULT_TEMPLATE_PATH``.  Tests must pass a temp path —
                 otherwise they inherit whatever the user learned by running
                 the app, and their results depend on the host machine.
+            seed_dir: Folder of hand-captured glyph PNGs for this profile,
+                or None.  Matched alongside the learned store, never saved.
         """
         self._hash_cache: Dict[bytes, str] = {}
         self._templates: Dict[str, List[np.ndarray]] = {}
+        self._seeds: Dict[str, List[np.ndarray]] = {}
+        self._bank_key: Optional[tuple] = None   # see _scores
         self._candidates: Dict[bytes, Dict[str, int]] = {}
         self._dirty = False
         self._warmup_complete = False
@@ -92,6 +178,71 @@ class TemplateMatcher:
             else self.DEFAULT_TEMPLATE_PATH
         )
         self._load()
+        if seed_dir is not None:
+            self._load_seeds(Path(seed_dir))
+
+    def _all_templates(self) -> Iterator[Tuple[str, np.ndarray]]:
+        """Every learned template, then every seed."""
+        for store in (self._templates, self._seeds):
+            for char, templates in store.items():
+                for tmpl in templates:
+                    yield char, tmpl
+
+    def _scores(self, norm: np.ndarray) -> Tuple[List[str], np.ndarray, int]:
+        """NCC of *norm* against every template, as one matrix product.
+
+        Gives exactly what :meth:`_ncc` gives pair by pair, which cost
+        ~30 us a template - fine for a hundred, not for the several hundred
+        a seeded store holds, on every cell the hash cache misses.
+
+        Returns:
+            ``(labels, scores, n_learned)`` in :meth:`_all_templates` order;
+            the first *n_learned* entries are learned, the rest seeds.
+        """
+        key = (tuple((c, len(v)) for c, v in self._templates.items()),
+               tuple((c, len(v)) for c, v in self._seeds.items()))
+        if key != self._bank_key:
+            shape = (self.NORM_SIZE[1], self.NORM_SIZE[0])
+            labels, rows, flat = [], [], []
+            for char, tmpl in self._all_templates():
+                row = np.zeros(shape[0] * shape[1], dtype=np.float32)
+                is_flat = False
+                # A template of another shape scores 0, as in _ncc.
+                if tmpl.shape == shape:
+                    centred = tmpl.ravel().astype(np.float32)
+                    centred -= centred.mean()
+                    length = float(np.linalg.norm(centred))
+                    if length > self._FLAT:
+                        row = centred / length
+                    else:
+                        is_flat = True   # blank or solid: _ncc's zero-std case
+                labels.append(char)
+                rows.append(row)
+                flat.append(is_flat)
+            bank = (np.stack(rows) if rows
+                    else np.zeros((0, shape[0] * shape[1]), np.float32))
+            self._bank = (labels, bank, np.array(flat, dtype=bool),
+                          self.template_count)
+            self._bank_key = key
+
+        labels, bank, flat, n_learned = self._bank
+        query = norm.ravel().astype(np.float32)
+        query -= query.mean()
+        length = float(np.linalg.norm(query))
+        if length <= self._FLAT:
+            return labels, flat.astype(np.float32), n_learned
+        return labels, bank @ (query / length), n_learned
+
+    #: Below this vector length a glyph has no variance to correlate.
+    #: Matches _ncc's std < 1e-6 over NORM_SIZE pixels.
+    _FLAT = 1e-6 * (NORM_SIZE[0] * NORM_SIZE[1]) ** 0.5
+
+    def _best_seed(self, norm: np.ndarray) -> Optional[Tuple[str, float]]:
+        labels, scores, n_learned = self._scores(norm)
+        if len(labels) == n_learned:
+            return None
+        i = n_learned + int(np.argmax(scores[n_learned:]))
+        return labels[i], float(scores[i])
 
     # ----- recognition ---------------------------------------------------
 
@@ -111,12 +262,11 @@ class TemplateMatcher:
         # Slower: NCC against all templates
         best_char: Optional[str] = None
         best_score = 0.0
-        for char, templates in self._templates.items():
-            for tmpl in templates:
-                score = self._ncc(norm, tmpl)
-                if score > best_score:
-                    best_score = score
-                    best_char = char
+        labels, scores, _ = self._scores(norm)
+        if labels:
+            i = int(np.argmax(scores))
+            if scores[i] > best_score:
+                best_score, best_char = float(scores[i]), labels[i]
 
         if best_score >= self.MATCH_THRESHOLD and best_char is not None:
             # No geometry heuristic here.  A template match is evidence from
@@ -157,13 +307,13 @@ class TemplateMatcher:
         if cached is not None and not (exclude and cached in exclude):
             return (cached, 1.0)
         best_char, best_score = None, 0.0
-        for char, templates in self._templates.items():
-            if exclude and char in exclude:
-                continue
-            for tmpl in templates:
-                score = self._ncc(norm, tmpl)
-                if score > best_score:
-                    best_score, best_char = score, char
+        labels, scores, _ = self._scores(norm)
+        if exclude:
+            scores = np.where([c in exclude for c in labels], -np.inf, scores)
+        if labels:
+            i = int(np.argmax(scores))
+            if scores[i] > best_score:
+                best_score, best_char = float(scores[i]), labels[i]
         if best_char is None:
             return None
         return (best_char, best_score)
@@ -195,6 +345,15 @@ class TemplateMatcher:
 
         # Already known — skip
         if key in self._hash_cache:
+            return
+
+        # A seed was captured and named by hand.  A glyph that plainly is
+        # one seed must not be learned as something else: a learned store
+        # has been found holding a '4' labelled 'R', and this stops that.
+        seed = self._best_seed(norm)
+        if seed and seed[0] != char and seed[1] >= self.MATCH_THRESHOLD:
+            logger.debug("Not learning '%s': it matches seed '%s' (%.2f)",
+                         char, seed[0], seed[1])
             return
 
         # ---- candidate voting ----
@@ -306,6 +465,22 @@ class TemplateMatcher:
         except Exception as exc:
             logger.warning("Failed to load templates: %s", exc)
 
+    def _load_seeds(self, seed_dir: Path) -> None:
+        if not seed_dir.is_dir():
+            logger.warning("Seed folder %s not found; no seeds loaded", seed_dir)
+            return
+        for char, binary in seed_binaries(seed_dir):
+            glyph = self._extract_glyph(binary)
+            if glyph is None:
+                continue
+            norm = self._normalize(glyph)
+            variants = self._seeds.setdefault(char, [])
+            # Thresholds that agree give the same shape; keep one of each.
+            if all(self._ncc(norm, v) <= 0.95 for v in variants):
+                variants.append(norm)
+        logger.info("Loaded %d seed glyphs for %d characters from %s",
+                    self.seed_count, len(self._seeds), seed_dir)
+
     # ----- helpers -------------------------------------------------------
 
     def _normalize(self, glyph: np.ndarray) -> np.ndarray:
@@ -369,8 +544,13 @@ class TemplateMatcher:
     def template_count(self) -> int:
         return sum(len(v) for v in self._templates.values())
 
+    @property
+    def seed_count(self) -> int:
+        return sum(len(v) for v in self._seeds.values())
+
     def reset(self) -> None:
-        """Wipe all in-memory templates and candidates."""
+        """Wipe all learned templates and candidates.  Seeds are kept: they
+        come from files, not from learning."""
         self._hash_cache.clear()
         self._templates.clear()
         self._candidates.clear()
@@ -384,21 +564,27 @@ class TemplateMatcher:
 # switches the store (see set_template_store).
 _template_matcher: Optional[TemplateMatcher] = None
 _template_store_path: Optional[Path] = None
+_template_seed_dir: Optional[Path] = None
 
 
 def _get_template_matcher() -> TemplateMatcher:
     global _template_matcher
     if _template_matcher is None:
-        _template_matcher = TemplateMatcher(template_path=_template_store_path)
+        _template_matcher = TemplateMatcher(template_path=_template_store_path,
+                                            seed_dir=_template_seed_dir)
     return _template_matcher
 
 
-def set_store(path) -> bool:
+def set_store(path, seed_dir=None) -> bool:
     """Make *path* the active learned-glyph store.
 
     Saves the outgoing store first.  Glyphs learned from one font must never
     be matched against another, so each aircraft profile gets its own file
     and switching profile switches the store.
+
+    Args:
+        path: The learned-glyph store.
+        seed_dir: The profile's hand-captured seed glyphs, or None.
 
     Returns:
         True if the active store changed.  The caller uses this to discard
@@ -406,14 +592,18 @@ def set_store(path) -> bool:
         holds readings produced by the old store's glyphs, and serving those
         after a switch would show the previous aircraft's font decisions.
     """
-    global _template_matcher, _template_store_path
+    global _template_matcher, _template_store_path, _template_seed_dir
     path = Path(path)
-    if _template_matcher is not None and _template_store_path == path:
+    seed_dir = Path(seed_dir) if seed_dir is not None else None
+    if (_template_matcher is not None and _template_store_path == path
+            and _template_seed_dir == seed_dir):
         return False
     if _template_matcher is not None:
         _template_matcher.save()
     _template_store_path = path
-    _template_matcher = TemplateMatcher(template_path=path)
-    logger.info("Template store switched to %s (%d templates)",
-                path.name, _template_matcher.template_count)
+    _template_seed_dir = seed_dir
+    _template_matcher = TemplateMatcher(template_path=path, seed_dir=seed_dir)
+    logger.info("Template store switched to %s (%d templates, %d seeds)",
+                path.name, _template_matcher.template_count,
+                _template_matcher.seed_count)
     return True

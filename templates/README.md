@@ -1,79 +1,105 @@
 # Templates Directory
 
-This directory is reserved for character template images that can be used for template matching as an alternative to OCR.
+The parser already recognises characters by template matching. You do not
+need to change `mcdu_parser.py` to use templates. This folder holds two kinds
+of glyph data:
 
-## Future Enhancement
+| What | Where | Made by | In git |
+|---|---|---|---|
+| Learned store | `mcdu_templates*.npz`, one per aircraft profile | The app, at runtime | No (`.gitignore`) |
+| Seed glyphs | `<profile>/` folders of PNGs, e.g. `ejets/` | Captured by hand | Yes |
 
-Instead of using OCR, you can:
+## How recognition works
 
-1. Capture reference images of each character from the MCDU
-2. Store them as templates in this directory
-3. Use OpenCV template matching for faster character recognition
+For each non-empty cell, [`parse_grid`](../src/mcdu_parser.py) tries these in
+order:
 
-## Template Format
+1. **Geometry**: entry boxes, dashes, slashes, brackets and similar shapes.
+2. **Template matching** ([`TemplateMatcher`](../src/mcdu_templates.py)):
+   - The cell's glyph is cropped and scaled to 20×28.
+   - It is first looked up by exact hash, then compared by normalised
+     cross-correlation (NCC) against every learned template and every seed.
+   - A score of 0.85 or more is accepted.
+3. **EasyOCR**, for rows that templates could not finish. During warmup its
+   readings are voted on, and a glyph joins the learned store only once
+   several readings agree.
 
-Templates should be:
-- PNG format
-- Grayscale or RGB
-- Same size (e.g., 20x20 pixels)
-- Named by character (e.g., `A.png`, `B.png`, `0.png`, etc.)
+## Learned store
 
-## Example Structure
+- Each aircraft profile has its own `.npz` file, because glyphs from one font
+  must never be matched against another font.
+- The app builds it on first run and keeps adding to it.
+- To rebuild it, use **Delete Templates** in the GUI, which deletes the
+  current profile's file.
+
+## Seed glyphs
+
+Seeds are PNGs captured from the real display. They are matched alongside
+the learned store but never saved into it.
+
+- A glyph a seed matches gets a hand-checked label from the first frame,
+  with no warmup needed.
+- A seed also stops the learner filing a glyph under the wrong label.
+  - A learned store has been found holding a `4` filed as `R`, and a broken
+    fragment filed as `7`.
+  - With seeds loaded, a glyph that matches the `4` seed at 0.85 or more can
+    no longer be learned as anything else.
+
+Seeds belong to a profile, not to a font family. The E-Jets and Fokker
+profiles both load the hardware's "Boeing" font, but the Fokker's glyphs are
+squatter and do not match the E-Jets seeds. A profile's seed folder is set by `seed_dirname` in
+[`aircraft_profiles.py`](../src/aircraft_profiles.py).
+
+### Layout
 
 ```
 templates/
-├── characters/
-│   ├── A.png
-│   ├── B.png
-│   ├── C.png
-│   └── ...
-├── symbols/
-│   ├── degree.png
-│   ├── arrow_left.png
-│   └── ...
-└── numbers/
-    ├── 0.png
-    ├── 1.png
-    └── ...
+└── ejets/
+    ├── characters/   A.png, A_large.png, …
+    ├── numbers/      0.png, 0_large.png, …
+    └── symbols/      degree.png, arrow_left.png, …
 ```
 
-## Using Templates
+Subfolders are only for tidiness: everything under the profile folder is
+loaded.
 
-To use template matching instead of OCR, modify `mcdu_parser.py`:
+### Capturing a seed
 
-```python
-import cv2
+- One character per PNG, cropped with a little margin. The size doesn't
+  matter, because glyphs are scaled to 20×28 before matching.
+- Ink can be in the **alpha channel** (a transparent background, which is how
+  the E-Jets set was captured) or in brightness (light ink on a dark
+  background).
+- Take the glyph from the simulator screen at its normal size, and don't
+  redraw or retouch it.
 
-class MCDUParser:
-    def __init__(self, image, templates_dir='templates/characters'):
-        self.image = image
-        self.templates = self._load_templates(templates_dir)
-    
-    def _load_templates(self, templates_dir):
-        templates = {}
-        for template_file in Path(templates_dir).glob('*.png'):
-            char = template_file.stem
-            template = cv2.imread(str(template_file), cv2.IMREAD_GRAYSCALE)
-            templates[char] = template
-        return templates
-    
-    def detect_character(self, cell):
-        # Convert cell to grayscale
-        gray = cv2.cvtColor(cell, cv2.COLOR_RGB2GRAY)
-        
-        best_match = None
-        best_score = 0
-        
-        # Try each template
-        for char, template in self.templates.items():
-            result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, _ = cv2.minMaxLoc(result)
-            
-            if max_val > best_score:
-                best_score = max_val
-                best_match = char
-        
-        return best_match if best_score > 0.7 else None
-```
+### File names
 
-This approach is typically faster and more accurate than OCR for fixed fonts.
+- A single-character name means that character: `A.png`, `7.png`.
+- A `_large` suffix marks the large font. It is dropped when the file is
+  loaded, because font size is read from the row, not the glyph.
+- Characters that cannot appear in a file name use these names:
+
+| Name | Char | Name | Char |
+|---|---|---|---|
+| `arrow_left` | ← | `less_than` | < |
+| `arrow_right` | → | `greater_than` | > |
+| `box` | ☐ | `paren_left` / `paren_right` | ( ) |
+| `dash` | - | `bracket_left` / `bracket_right` | [ ] |
+| `degree` | ° | `period` | . |
+| `plus` | + | `slash` | / |
+
+- Names the CDU cannot draw are ignored. In the E-Jets set these are
+  `ampersand`, `equals`, `square_filled`, `swap_arrows` and
+  `arrow_left_right_small`. The renderable set is `RENDERABLE` in
+  [`mcdu_charset.py`](../src/mcdu_charset.py).
+- `tests/test_seed_glyphs.py` fails if a file name in `ejets/` is not
+  understood, so a misspelt name doesn't get skipped without anyone noticing.
+
+### Adding seeds for another profile
+
+1. Capture the PNGs into `templates/<name>/`.
+2. Set `seed_dirname="<name>"` on that profile in `aircraft_profiles.py`.
+3. Add `templates/<name>` to the `--add-data` lines in `build_exe.bat`,
+   `MSFS-CDU-Scraper-GUI.spec` and `.github/workflows/build-executable*.yml`,
+   so the built app includes it.

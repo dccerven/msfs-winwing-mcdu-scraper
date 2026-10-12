@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 
 #: Font files MobiFlight actually ships for the MCDU hardware
@@ -61,6 +61,11 @@ class AircraftProfile:
     page_labels: str = ""
     #: Basename of this family's learned-glyph store under templates/.
     template_filename: str = ""
+    #: Folder of hand-captured glyph PNGs under templates/, if this family
+    #: has any.  Per profile rather than per font: the E-Jets and the Fokker
+    #: both load the hardware's Boeing font, but the Fokker's glyphs are
+    #: squatter and do not match the E-Jets seeds.
+    seed_dirname: str = ""
     notes: str = ""
 
     def template_path(self) -> Path:
@@ -68,6 +73,13 @@ class AircraftProfile:
         from mcdu_templates import TemplateMatcher
         base = TemplateMatcher.DEFAULT_TEMPLATE_PATH.parent
         return base / self.template_filename
+
+    def seed_dir(self) -> Optional[Path]:
+        """Where this profile's seed glyphs live, or None if it has none."""
+        if not self.seed_dirname:
+            return None
+        from mcdu_templates import SEED_ROOT
+        return SEED_ROOT / self.seed_dirname
 
 
 PROFILES: Dict[str, AircraftProfile] = {
@@ -104,6 +116,23 @@ PROFILES: Dict[str, AircraftProfile] = {
             rows=14,
             font="Boeing",
             template_filename="mcdu_templates_boeing.npz",
+        ),
+        AircraftProfile(
+            id="ejets",
+            label="Embraer E-Jets MCDU  (E170/E175/E190/E195)",
+            columns=24,
+            rows=14,
+            font="Boeing",
+            template_filename="mcdu_templates_ejets.npz",
+            seed_dirname="ejets",
+            notes=(
+                "Ships glyphs captured from the E-Jets MCDU (templates/ejets): "
+                "they are matched from the first frame alongside learned ones, "
+                "and stop a glyph being learned under the wrong label. 24x14 "
+                "is the CDU convention, not yet measured from an E-Jets "
+                "capture - if text lands in the wrong cells, correct it under "
+                "Advanced > Override grid size."
+            ),
         ),
         AircraftProfile(
             id="fokker",

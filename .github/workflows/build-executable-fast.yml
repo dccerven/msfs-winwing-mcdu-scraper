@@ -31,6 +31,7 @@ jobs:
           --icon=NONE `
           --paths src `
           --add-data "config.yaml.example;." `
+          --add-data "templates/ejets;templates/ejets" `
           --hidden-import=numpy `
           --hidden-import=cv2 `
           --hidden-import=yaml `

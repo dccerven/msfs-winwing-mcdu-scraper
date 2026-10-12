@@ -213,14 +213,14 @@ def row_empty_to_occupied(flags: List[bool]) -> List[bool]:
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  EasyOCR reader with multi-GPU support
-def set_template_store(path) -> None:
+def set_template_store(path, seed_dir=None) -> None:
     """Switch the learned-glyph store, and drop what the old one produced.
 
     A thin wrapper over mcdu_templates.set_store: the row-level OCR cache
     below belongs to this module, and its entries were read with the
     outgoing store's glyphs.
     """
-    if mcdu_templates.set_store(path):
+    if mcdu_templates.set_store(path, seed_dir):
         _prev_row_imgs.clear()
         _prev_row_ocr.clear()
 
@@ -1359,7 +1359,8 @@ class MCDUParser:
                 row_images[row] = self._extract_row_image(row)
 
         # ── No OCR engine at all: contour-only path ───────────────────
-        if not _EASYOCR_AVAILABLE and matcher.template_count == 0:
+        if (not _EASYOCR_AVAILABLE and matcher.template_count == 0
+                and matcher.seed_count == 0):
             for row in range(self.rows):
                 for col in range(self.columns):
                     cell = self.extract_cell(row, col)

@@ -42,6 +42,7 @@ venv\Scripts\python.exe -m PyInstaller --name "MSFS-CDU-Scraper-GUI" ^
     --icon=NONE ^
     --paths src ^
     --add-data "config.yaml.example;." ^
+    --add-data "templates/ejets;templates/ejets" ^
     --hidden-import=numpy ^
     --hidden-import=cv2 ^
     --hidden-import=yaml ^

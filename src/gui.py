@@ -704,7 +704,7 @@ class MCDUScraperWindow(QMainWindow):
         columns, rows = self._current_grid()
         # Glyphs learned from one font must not be matched against another:
         # each profile has its own template store.
-        set_template_store(profile.template_path())
+        set_template_store(profile.template_path(), profile.seed_dir())
         font = self.config.get_font() or profile.font
         self.log(f"Profile {profile.id}: grid {columns}x{rows}, font {font}")
 
@@ -808,7 +808,7 @@ class MCDUScraperWindow(QMainWindow):
         # Reset the in-memory state so the next start triggers a full
         # warmup with fresh learning for this profile.
         try:
-            set_template_store(template_path)
+            set_template_store(template_path, profile.seed_dir())
             _get_template_matcher().reset()
             _prev_row_imgs.clear()
             _prev_row_ocr.clear()

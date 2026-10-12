@@ -88,6 +88,7 @@ the **Aircraft** dropdown:
 | Airbus MCDU | 24x14 | AirbusThales | Default/iniBuilds A320neo, A321, A330 (MSFS 2020/2024); LatinVFR & Horizon Sim Airbuses; Headwind A330-900 without SimBridge |
 | ATR MCDU | 24x14 | AirbusThales | ATR 42-600 / 72-600 (Thales FMS 220, MSFS 2020 Expert Series & 2024) |
 | Boeing CDU | 24x14 | Boeing | Default 747-8 and 787; C-17, E-7 (MSFS 2024) |
+| Embraer E-Jets MCDU | 24x14 | Boeing | E170 / E175 / E190 / E195. Ships glyphs captured from the E-Jets display ([templates/README.md](templates/README.md)) |
 | Fokker 70/100 FMC | 24x14 | Boeing | Just Flight Fokker 70 / 100 (Honeywell/Pegasus), green monochrome CRT |
 | Avro RJ / BAe 146 GNLU | 25x14 | Boeing | Just Flight Avro RJ (GNLU) — one column wider than the hardware; rows are squeezed by dropping blank cells |
 | UNS-1 (experimental) | 24x11 | Boeing | Working Title UNS-1 (Black Square TBM 850, Dukes, King Air); Just Flight BAe 146 / F28 UNS-1 |
@@ -182,7 +183,8 @@ character has to be read the same way by more than one of them before it is
 learned. Afterwards
 recognition uses those templates and is fast. They are saved to `templates/`,
 so it happens once per aircraft family. The GUI's "Delete Templates" button
-forces a relearn.
+forces a relearn. A profile can also ship hand-captured glyphs that are
+recognised from the first frame; see [templates/README.md](templates/README.md).
 
 ## How It Works
 
@@ -240,7 +242,7 @@ msfs-winwing-mcdu-scraper/
 │   ├── region_geometry.py      # Selection maths, testable headless
 │   └── mobiflight_client.py    # WebSocket communication
 ├── tests/                      # Unit tests
-├── templates/                  # Learned glyph templates (runtime)
+├── templates/                  # Learned glyph stores (runtime), seed glyph PNGs
 ├── requirements.txt            # Python dependencies
 ├── config.yaml.example         # Annotated configuration template
 ├── ISSUES.md                   # Known issues and their status
