@@ -39,7 +39,8 @@ from typing import Dict, Iterator, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from mcdu_charset import ARROW_LEFT, ARROW_RIGHT, BALLOT_BOX, DEGREE, RENDERABLE
+from mcdu_charset import (ARROW_LEFT, ARROW_RIGHT, BALLOT_BOX, DEGREE,
+                          RENDERABLE, SUBSTITUTIONS, UNDRAWN)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,16 @@ SEED_NAMES: Dict[str, str] = {
     "slash": "/",
     "bracket_left": "[",
     "bracket_right": "]",
+    # Not drawable, but SUBSTITUTIONS says what the CDU shows instead.
+    "equals": "=",
 }
+
+#: Seed files for glyphs the CDU has nothing to show for.  They are still
+#: loaded: a cell that matches one is left blank, where otherwise EasyOCR
+#: put a letter there ('4' for the E-Jets swap icon) and could learn it.
+UNDRAWN_NAMES = frozenset({
+    "ampersand", "arrow_left_right_small", "square_filled", "swap_arrows",
+})
 
 #: Alpha levels a seed is binarised at.  A capture is anti-aliased and the
 #: parser's threshold is not, so one cut-off gives one stroke weight; three
@@ -83,11 +93,16 @@ _SEED_THRESHOLDS = (64, 127, 192)
 
 
 def seed_char(stem: str) -> Optional[str]:
-    """The character a seed file names, or None if the CDU cannot draw it."""
+    """The character a seed file names, or None if it names nothing known.
+
+    UNDRAWN for a glyph the CDU cannot show at all.
+    """
     if stem.endswith("_large"):
         stem = stem[: -len("_large")]
+    if stem in UNDRAWN_NAMES:
+        return UNDRAWN
     char = stem.upper() if len(stem) == 1 else SEED_NAMES.get(stem)
-    return char if char in RENDERABLE else None
+    return char if char in RENDERABLE or char in SUBSTITUTIONS else None
 
 
 def seed_binaries(seed_dir: Path) -> Iterator[Tuple[str, np.ndarray]]:
@@ -100,7 +115,7 @@ def seed_binaries(seed_dir: Path) -> Iterator[Tuple[str, np.ndarray]]:
     for path in sorted(Path(seed_dir).rglob("*.png")):
         char = seed_char(path.stem)
         if char is None:
-            logger.debug("Seed %s names nothing the CDU draws; skipped", path.name)
+            logger.debug("Seed %s names no known character; skipped", path.name)
             continue
         image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if image is None:
@@ -132,6 +147,14 @@ class TemplateMatcher:
     NORM_SIZE = (20, 28)       # (width, height) of normalised glyph
     MATCH_THRESHOLD = 0.85     # min NCC score to accept
     FALLBACK_THRESHOLD = 0.70  # ...and to accept as a last resort
+
+    #: An undrawn glyph is also accepted from FALLBACK_THRESHOLD up, when it
+    #: beats every drawable template by this much.  The E-Jets swap icons
+    #: score only 0.77-0.83 against their own seeds, and EasyOCR then named
+    #: them '4' and 'M'; but they beat every letter by 0.34 or more, where
+    #: no real character on any of the eight captures comes within 0.10 of
+    #: preferring an undrawn seed.
+    UNDRAWN_MARGIN = 0.25
     MAX_TEMPLATES = 5          # max variants stored per character
     CONSENSUS_MIN = 2          # min votes to promote a candidate template
     LATE_CONSENSUS_MIN = 3     # ...and after warmup, when evidence is thinner
@@ -267,6 +290,14 @@ class TemplateMatcher:
             i = int(np.argmax(scores))
             if scores[i] > best_score:
                 best_score, best_char = float(scores[i]), labels[i]
+
+        if (best_char == UNDRAWN and best_score >= self.FALLBACK_THRESHOLD
+                and best_score < self.MATCH_THRESHOLD):
+            drawable = max((float(s) for c, s in zip(labels, scores)
+                            if c != UNDRAWN), default=0.0)
+            if best_score - drawable >= self.UNDRAWN_MARGIN:
+                self._hash_cache[key] = UNDRAWN
+                return (UNDRAWN, best_score)
 
         if best_score >= self.MATCH_THRESHOLD and best_char is not None:
             # No geometry heuristic here.  A template match is evidence from

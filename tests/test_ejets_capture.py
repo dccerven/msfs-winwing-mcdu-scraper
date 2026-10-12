@@ -2,15 +2,19 @@
 Embraer E-Jets MCDU, from a real capture.
 
 tests/data/ejets_mcdu.png is the RADIO page: large green and white values
-under small labels, solid triangle arrows, and - unlike every other capture
-here - separator lines drawn across the display.  The WinWing hardware has
-no lines to draw, so they must not reach it as characters.  Before they were
-erased they read as 36 characters in cells that are blank, a dash in every
-blank cell they crossed and a '1' wherever the vertical one ran.
+under small labels, solid triangle arrows, symbols the CDU cannot draw, and -
+unlike every other capture here - separator lines drawn across the display.
 
-The crop is fixed rather than detected: Auto Detect currently cuts the
-title row in half on this page, because its label rows sit closer to their
-value rows than a uniform pitch implies.
+What it exposed, all of it now read correctly:
+
+* the lines were read as text - 36 characters in cells that are blank - and
+  the vertical one merged the rows it crossed, so Auto Detect cut the title
+  in half and every row after it straddled two lines of text;
+* the solid triangles read as '→' and '>' where they point left and right;
+* the bold '0' and 'N' fill enough of their cells to pass for reverse video,
+  and were read inside out;
+* the swap icons, the diamond and the filled square came out as '4', 'M'
+  and 'O' instead of blank.
 """
 
 import tempfile
@@ -25,16 +29,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 import mcdu_parser
 import mcdu_templates
 from aircraft_profiles import PROFILES
+from mcdu_detector import detect_mcdu_region
 from mcdu_parser import MCDUParser, erase_rules
 from mcdu_templates import TemplateMatcher
 
 CAPTURE = Path(__file__).parent / "data" / "ejets_mcdu.png"
 
-#: (x, y, w, h) of the 24x14 grid, measured by eye from the text rows.
-CROP = (0, 25, 808, 617)
+#: Where the 24x14 grid lies, (x, y, w, h).  Found by a search over origin
+#: and width for the crop that reads best; Auto Detect has to land near it.
+GRID = (7, 24, 790, 618)
 
 #: The page as displayed.  '?' marks a glyph the CDU cannot draw - the swap
-#: icons, the diamond and the filled square - which is not scored.
+#: icons, the diamond and the filled square - which must come out blank.
 TRUTH = [
     "         RADIO       1/2",
     " COM1              COM2 ",
@@ -53,11 +59,9 @@ TRUTH = [
 ]
 
 
-def load_crop():
+def load():
     from PIL import Image
-    image = np.array(Image.open(CAPTURE).convert("RGB"))
-    x, y, w, h = CROP
-    return image[y:y + h, x:x + w]
+    return np.array(Image.open(CAPTURE).convert("RGB"))
 
 
 class TestEraseRules(unittest.TestCase):
@@ -109,8 +113,29 @@ class TestEraseRules(unittest.TestCase):
 
 
 @unittest.skipIf(not CAPTURE.exists(), "E-Jets capture missing")
+class TestEjetsDetection(unittest.TestCase):
+
+    def assertNearGrid(self, found, offset=(0, 0)):
+        self.assertIsNotNone(found, "nothing detected")
+        want = (GRID[0] + offset[0], GRID[1] + offset[1], GRID[2], GRID[3])
+        for got, expected, name in zip(found, want, "xywh"):
+            self.assertLessEqual(abs(got - expected), 4,
+                                 f"{name}: got {found}, want about {want}")
+
+    def test_finds_the_grid(self):
+        self.assertNearGrid(detect_mcdu_region(load()))
+
+    def test_finds_the_grid_inside_a_larger_window(self):
+        """As captured live: the pop-out is wider than the display."""
+        image = load()
+        window = np.zeros((800, 1700, 3), np.uint8)
+        window[51:51 + image.shape[0], 882:882 + image.shape[1]] = image
+        self.assertNearGrid(detect_mcdu_region(window), offset=(882, 51))
+
+
+@unittest.skipIf(not CAPTURE.exists(), "E-Jets capture missing")
 class TestEjetsCapture(unittest.TestCase):
-    """A cold first read, as a new user's first frame would be."""
+    """A cold first read on the detected grid, as a first frame would be."""
 
     @classmethod
     def setUpClass(cls):
@@ -125,9 +150,11 @@ class TestEjetsCapture(unittest.TestCase):
         mcdu_templates._template_matcher = TemplateMatcher(
             template_path=Path(cls._tmpdir.name) / "ejets.npz",
             seed_dir=PROFILES["ejets"].seed_dir())
-        cls.crop = load_crop()
-        cls.parsed = MCDUParser(cls.crop, columns=24, rows=14,
-                                source_id="ejets").parse_grid()
+        image = load()
+        x, y, w, h = detect_mcdu_region(image)
+        cls.parser = MCDUParser(image[y:y + h, x:x + w], columns=24, rows=14,
+                                source_id="ejets")
+        cls.parsed = cls.parser.parse_grid()
 
     @classmethod
     def tearDownClass(cls):
@@ -147,33 +174,33 @@ class TestEjetsCapture(unittest.TestCase):
         return "".join(self._got(row, col) for col in range(24))
 
     def test_characters_read_back(self):
-        total = correct = 0
-        errors = []
-        for row, line in enumerate(TRUTH):
-            for col, want in enumerate(line):
-                if want in " ?":
-                    continue
-                total += 1
-                got = self._got(row, col)
-                if got == want:
-                    correct += 1
-                else:
-                    errors.append(f"R{row:02d}C{col:02d} {want!r}->{got!r}")
-        # 119/130 before the separator lines were erased, 123 after.  The
-        # rest are geometry: '.' read as '/', and the solid arrows.
-        self.assertGreaterEqual(correct, 123,
-                                f"{correct}/{total}; errors: {errors}")
+        errors = [f"R{row:02d}C{col:02d} {want!r}->{self._got(row, col)!r}"
+                  for row, line in enumerate(TRUTH)
+                  for col, want in enumerate(line)
+                  if want not in " ?" and self._got(row, col) != want]
+        # 119 of 130 when this capture was added; every one since the
+        # lines, the arrows, reverse video and Auto Detect were fixed.
+        self.assertEqual(errors, [])
 
     def test_separator_lines_are_not_read_as_text(self):
         junk = [f"R{row:02d}C{col:02d} {self._got(row, col)!r}"
                 for row, line in enumerate(TRUTH)
                 for col, want in enumerate(line)
                 if want == " " and self._got(row, col) != " "]
-        self.assertLessEqual(len(junk), 2, f"{len(junk)} in blank cells: {junk}")
+        self.assertEqual(junk, [])
 
-    def test_value_rows_under_the_lines(self):
-        """Rows 5 and 9 sit just below a line; row 8 just above one."""
-        self.assertIn("NAV1", self._row(5))
-        self.assertIn("NAV2", self._row(5))
-        self.assertIn("XPDR", self._row(9))
-        self.assertIn("738", self._row(9))
+    def test_undrawable_symbols_come_out_blank(self):
+        stray = [f"R{row:02d}C{col:02d} {self._got(row, col)!r}"
+                 for row, line in enumerate(TRUTH)
+                 for col, want in enumerate(line)
+                 if want == "?" and self._got(row, col) != " "]
+        self.assertEqual(stray, [])
+
+    def test_solid_triangles_are_arrows(self):
+        self.assertEqual(self._got(10, 0), "←")
+        self.assertEqual(self._got(10, 23), "→")
+
+    def test_bold_glyphs_are_not_reverse_video(self):
+        inverted = [(row, col) for row in range(14) for col in range(24)
+                    if len(self.parsed[row * 24 + col]) > 3]
+        self.assertEqual(inverted, [])

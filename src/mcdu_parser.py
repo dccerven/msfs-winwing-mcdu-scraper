@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from mcdu_charset import BALLOT_BOX, OCR_ALLOWLIST, RENDERABLE
+from mcdu_charset import BALLOT_BOX, OCR_ALLOWLIST, RENDERABLE, UNDRAWN
 # Re-exported: callers and tests have always reached these through the
 # parser, and where a glyph is named from is an implementation detail.
 from mcdu_glyphs import (       # noqa: F401
@@ -43,6 +43,7 @@ from mcdu_templates import (    # noqa: F401
     _get_template_matcher,
 )
 from mcdu_labels import apply_label_corrections
+from mcdu_rules import find_rules
 
 logger = logging.getLogger(__name__)
 
@@ -231,11 +232,6 @@ _RULE_MIN_CELLS = 2.5
 #: is not a rule; the edge of a reverse-video block is the case in point.
 _RULE_MAX_THICKNESS = 0.15
 
-#: ...with no more than this fraction of ink along either side of it.  The
-#: margin of a reverse-video block is a long thin bright run as well, but
-#: the block itself lies along one side of it.
-_RULE_MAX_SIDE_INK = 0.3
-
 
 def brightest_channel(image: np.ndarray) -> np.ndarray:
     """Per-pixel maximum over the colour channels."""
@@ -253,34 +249,17 @@ def erase_rules(image: np.ndarray, cell_width: float, cell_height: float,
 
     Returns *image* itself when there are none, and a copy otherwise.
     *gray* is :func:`brightest_channel` of the image, if already known.
+    See mcdu_rules for what counts as a rule.
     """
     if gray is None:
         gray = brightest_channel(image)
-    ink = (gray > ink_level).astype(np.uint8)
-    rules = np.zeros_like(ink)
-
-    for horizontal in (True, False):
-        length = int(round(_RULE_MIN_CELLS
-                           * (cell_width if horizontal else cell_height)))
-        if length < 3:
-            continue
-        kernel = np.ones((1, length) if horizontal else (length, 1), np.uint8)
-        runs = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
-        count, labels, stats, _ = cv2.connectedComponentsWithStats(runs, 8)
-        across = cell_height if horizontal else cell_width
-        for i in range(1, count):
-            x, y, w, h = stats[i, :4]
-            if (h if horizontal else w) > max(3, _RULE_MAX_THICKNESS * across):
-                continue
-            last_row, last_col = ink.shape[0] - 1, ink.shape[1] - 1
-            if horizontal:
-                sides = (ink[max(0, y - 2), x:x + w],
-                         ink[min(last_row, y + h + 1), x:x + w])
-            else:
-                sides = (ink[y:y + h, max(0, x - 2)],
-                         ink[y:y + h, min(last_col, x + w + 1)])
-            if all(side.mean() <= _RULE_MAX_SIDE_INK for side in sides):
-                rules[labels == i] = 1
+    rules = find_rules(
+        gray > ink_level,
+        min_length=(_RULE_MIN_CELLS * cell_width,
+                    _RULE_MIN_CELLS * cell_height),
+        max_thickness=(max(3, _RULE_MAX_THICKNESS * cell_height),
+                       max(3, _RULE_MAX_THICKNESS * cell_width)),
+    )
 
     if not rules.any():
         return image
@@ -386,6 +365,14 @@ class MCDUParser:
     #: at most 40.9% and inverted ones start at 47.8%, so this sits between
     #: them with roughly three points of margin either side.
     INVERTED_FILL_RATIO = 0.44
+
+    #: ...and its border must be bright as well.  Fill alone is not enough
+    #: for a heavy font: the E-Jets' bold '0' and 'N' fill 45-46% of their
+    #: cells, crossed the line above and were read inside out.  A block
+    #: runs out to the cell's edges and a glyph does not - over every cell
+    #: of the eight captures, the reverse-video ones have at least 38% of
+    #: a two-pixel border bright, and the bold glyphs at most 14%.
+    INVERTED_BORDER_RATIO = 0.25
 
     def __init__(self, image: np.ndarray,
                  columns: int = 24, rows: int = 14,
@@ -531,8 +518,15 @@ class MCDUParser:
         element per cell, ``[char, colour, size, inverted]``, and the CDU
         renders it as reverse video.
         """
-        gray = np.max(cell, axis=2)
-        return float(np.mean(gray > self._mid_level)) > self.INVERTED_FILL_RATIO
+        bright = np.max(cell, axis=2) > self._mid_level
+        if float(np.mean(bright)) <= self.INVERTED_FILL_RATIO:
+            return False
+        ring = 2
+        border = np.concatenate([
+            bright[:ring].ravel(), bright[-ring:].ravel(),
+            bright[ring:-ring, :ring].ravel(), bright[ring:-ring, -ring:].ravel(),
+        ])
+        return float(np.mean(border)) > self.INVERTED_BORDER_RATIO
 
     # ------------------------------------------------------------------
     #  Empty-cell detection  (adaptive)
@@ -1269,6 +1263,22 @@ class MCDUParser:
             # the tail, while a plus sign is symmetric about its centre.
             if (0.45 <= aspect <= 1.40 and 0.28 <= rel_h <= 0.72
                     and holes == 0):
+                # Solid triangles first.  The E-Jets draws its prompts as
+                # filled wedges, and those fooled both tests below: the
+                # one pointing right is a chevron's outline filled in and
+                # read as '>', and the one pointing left read as '→',
+                # because a solid triangle's mass sits at its base, the
+                # opposite end from a shafted arrow's head.  What no
+                # chevron or arrow has is the base: a straight edge down
+                # the full height of the glyph.  Measured, the triangles'
+                # base edge covers every row; no chevron or arrow on the
+                # A330 or ATR captures reaches beyond 60%.
+                if (fill(roi) >= 0.40 and lead_mid <= 0.05
+                        and trail_mid >= 0.95):
+                    if lead_ends >= 0.60 and right_stem >= 0.90:
+                        return "←"
+                    if trail_ends <= 0.40 and left_stem >= 0.90:
+                        return "→"
                 third = max(1, w // 3)
                 left_mass = np.count_nonzero(roi[:, :third])
                 right_mass = np.count_nonzero(roi[:, -third:])
@@ -1758,6 +1768,16 @@ class MCDUParser:
                     )
                     if guess and guess[1] >= matcher.FALLBACK_THRESHOLD:
                         char = guess[0]
+
+                # A glyph the CDU cannot draw, matched by its seed.  The
+                # cell goes out blank rather than as whatever letter
+                # EasyOCR saw in it, and is kept in the row cache as what
+                # it is, so a frame served from there leaves it blank too.
+                if char == UNDRAWN:
+                    emitted.append(
+                        (UNDRAWN, col * self.cell_width + self.cell_width / 2))
+                    message_data.append([])
+                    continue
 
                 if not char:
                     char = " "

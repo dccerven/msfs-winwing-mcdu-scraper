@@ -32,6 +32,8 @@ import cv2
 import logging
 from typing import Optional, Tuple, List
 
+from mcdu_rules import find_rules
+
 logger = logging.getLogger(__name__)
 
 # Width/height ratio range that a valid MCDU text region can have.
@@ -53,6 +55,12 @@ _RULE_MIN_SOLIDITY = 0.92
 
 #: Below this occupancy a band is frame debris rather than text.
 _NOISE_MAX_SOLIDITY = 0.04
+
+#: A straight run of ink this fraction of the image long is a drawn rule.
+#: The cell size is what is being searched for, so it cannot be the ruler;
+#: but a glyph is a fourteenth of the height and a twenty-fourth of the
+#: width at most, and the E-Jets separators span about half of each.
+_RULE_MIN_FRACTION = 0.15
 
 
 def _ink_mask(image: np.ndarray) -> Optional[np.ndarray]:
@@ -532,6 +540,33 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     if mask is None:
         return None
     height, width = mask.shape
+
+    # Drawn separators out first.  A vertical one leaves no blank line
+    # between the text rows it crosses, so they all read as one band: on
+    # the E-Jets RADIO page rows 1 to 8 merged and the grid came out a
+    # third of a row high, cutting the title in half.
+    #
+    # Found on plain brightness rather than on the mask.  The mask's local
+    # contrast draws a 2px line 5px thick, and then the glyphs sitting just
+    # above it count as ink along its side, which is what tells a rule from
+    # the edge of a reverse-video block - so the line beneath 113.90 was
+    # kept, and its end at the screen's edge stretched the grid to reach it.
+    gray = np.max(image, axis=2) if image.ndim == 3 else image
+    bright = gray.astype(np.int16) > float(np.median(gray)) + _INK_CONTRAST
+    rules = find_rules(bright,
+                       min_length=(_RULE_MIN_FRACTION * width,
+                                   _RULE_MIN_FRACTION * height),
+                       max_thickness=(_RULE_MAX_THICKNESS,
+                                      _RULE_MAX_THICKNESS))
+    if rules.any():
+        # Everything joined to a rule goes with it: where a separator meets
+        # the window frame it leaves a stub, and a stub inside a text row
+        # passes for a glyph.  A glyph that touches a rule goes too; the
+        # pitch needs a sample of the glyphs, not every one.
+        rules = cv2.dilate(rules, np.ones((5, 5), np.uint8)).astype(bool)
+        _, labels = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+        joined = np.unique(labels[rules & mask])
+        mask = mask & ~np.isin(labels, joined[joined != 0])
 
     row_bounds = _text_rows(mask)
     if len(row_bounds) < 2:

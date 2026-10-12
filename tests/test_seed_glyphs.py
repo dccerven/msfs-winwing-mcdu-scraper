@@ -18,14 +18,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 import mcdu_templates
 from aircraft_profiles import PROFILES
-from mcdu_charset import DIGITS, LETTERS, RENDERABLE
+from mcdu_charset import DIGITS, LETTERS, RENDERABLE, SUBSTITUTIONS, UNDRAWN
 from mcdu_templates import SEED_ROOT, TemplateMatcher, seed_binaries, seed_char
 
 EJETS = SEED_ROOT / "ejets"
 
-#: Seed files that name glyphs the CDU cannot draw, and so are ignored.
-NOT_RENDERABLE = {"ampersand", "ampersand_large", "equals", "square_filled",
-                  "swap_arrows", "arrow_left_right_small"}
+#: Seed files for glyphs the CDU cannot draw: matched so they read as blank.
+UNDRAWN_FILES = {"ampersand", "ampersand_large", "square_filled",
+                 "swap_arrows", "arrow_left_right_small"}
 
 
 def _png_binary(name):
@@ -42,16 +42,22 @@ class TestSeedNames(unittest.TestCase):
         self.assertEqual(seed_char("7_large"), "7")
         self.assertEqual(seed_char("degree"), "°")
         self.assertEqual(seed_char("paren_left_large"), "(")
-        self.assertIsNone(seed_char("ampersand"))
+        self.assertEqual(seed_char("ampersand"), UNDRAWN)
+        self.assertEqual(seed_char("swap_arrows"), UNDRAWN)
+        # Not drawable, but the CDU shows '-' for it (SUBSTITUTIONS).
+        self.assertEqual(seed_char("equals"), "=")
         self.assertIsNone(seed_char("no_such_symbol"))
 
     @unittest.skipIf(not EJETS.is_dir(), "E-Jets seeds missing")
     def test_every_ejets_file_is_understood(self):
         """A misspelt file name would be skipped without a word."""
         for path in EJETS.rglob("*.png"):
-            if path.stem in NOT_RENDERABLE:
-                continue
-            self.assertIn(seed_char(path.stem), RENDERABLE, path.name)
+            char = seed_char(path.stem)
+            if path.stem in UNDRAWN_FILES:
+                self.assertEqual(char, UNDRAWN, path.name)
+            else:
+                self.assertTrue(char in RENDERABLE or char in SUBSTITUTIONS,
+                                f"{path.name} -> {char!r}")
 
     def test_alpha_channel_carries_the_ink(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -58,6 +58,14 @@ RENDERABLE: FrozenSet[str] = frozenset(
     + BALLOT_BOX + ARROW_LEFT + ARROW_RIGHT + ARROW_UP + ARROW_DOWN + DELTA
 )
 
+#: A glyph the display draws and the CDU cannot: the E-Jets' swap icons, the
+#: diamond beside STBY and the filled square after IDENT.  Read as a letter
+#: they put a stray '4' or 'O' on the hardware, so the recognisers name them
+#: with this instead, and the parser leaves the cell blank.  Private-use, so
+#: no OCR engine or font produces it, and sanitise_char turns any that leak
+#: into a space.
+UNDRAWN = ""
+
 # ---------------------------------------------------------------------------
 #  What EasyOCR is permitted to output.
 # ---------------------------------------------------------------------------
