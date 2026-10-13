@@ -123,6 +123,16 @@ def is_entry_box(binary: np.ndarray, cell_h: int, cell_w: int) -> bool:
     if min(top, bottom, left, right) < 0.80:
         return False
 
+    # ...meeting in square corners.  The E-Jets' large O is a rectangle
+    # with rounded corners - continuous borders, an empty middle - and
+    # PROGRESS read as PR☐GRESS.  Its corners are mostly empty; a box's
+    # are solid.
+    corner = max(1, min(w, h) // 6)
+    corners = (glyph[:corner, :corner], glyph[:corner, -corner:],
+               glyph[-corner:, :corner], glyph[-corner:, -corner:])
+    if min(band(c) for c in corners) < 0.5:
+        return False
+
     # ...and the middle must be empty.  This is what rejects 0, 8, B and D,
     # every one of which puts ink through the centre of the glyph.
     inner = glyph[h // 4:h - h // 4, w // 4:w - w // 4]

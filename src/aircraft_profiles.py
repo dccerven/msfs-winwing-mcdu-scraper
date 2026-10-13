@@ -66,6 +66,13 @@ class AircraftProfile:
     #: both load the hardware's Boeing font, but the Fokker's glyphs are
     #: squatter and do not match the E-Jets seeds.
     seed_dirname: str = ""
+    #: Cell height, in pixels, every capture is scaled to before reading,
+    #: so the window can be any size.  0 reads each capture at its own
+    #: size, which is what the other profiles were tuned at.  The E-Jets
+    #: is read at 44px, the size its seed glyphs were captured at: drawn
+    #: half size in GlassOut's cockpit strip its slashed zero read as an 8,
+    #: and at one and a half times its pop-out size a whole page went wrong.
+    working_cell_height: int = 0
     notes: str = ""
 
     def template_path(self) -> Path:
@@ -125,6 +132,7 @@ PROFILES: Dict[str, AircraftProfile] = {
             font="Boeing",
             template_filename="mcdu_templates_ejets.npz",
             seed_dirname="ejets",
+            working_cell_height=44,
             notes=(
                 "Ships glyphs captured from the E-Jets MCDU (templates/ejets): "
                 "they are matched from the first frame alongside learned ones, "

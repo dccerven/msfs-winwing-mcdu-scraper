@@ -40,7 +40,7 @@ import cv2
 import numpy as np
 
 from mcdu_charset import (ARROW_LEFT, ARROW_RIGHT, BALLOT_BOX, DEGREE,
-                          RENDERABLE, SUBSTITUTIONS, UNDRAWN)
+                          DRAWABLE, SUBSTITUTIONS, UNDRAWN)
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +72,18 @@ SEED_NAMES: Dict[str, str] = {
     "slash": "/",
     "bracket_left": "[",
     "bracket_right": "]",
-    # Not drawable, but SUBSTITUTIONS says what the CDU shows instead.
     "equals": "=",
+    "percent": "%",
+    "ampersand": "&",
+    "hash": "#",
+    "asterisk": "*",
 }
 
 #: Seed files for glyphs the CDU has nothing to show for.  They are still
 #: loaded: a cell that matches one is left blank, where otherwise EasyOCR
 #: put a letter there ('4' for the E-Jets swap icon) and could learn it.
 UNDRAWN_NAMES = frozenset({
-    "ampersand", "arrow_left_right_small", "percent", "square_filled",
-    "swap_arrows",
+    "arrow_left_right_small", "square_filled", "swap_arrows",
 })
 
 #: Alpha levels a seed is binarised at.  A capture is anti-aliased and the
@@ -103,7 +105,7 @@ def seed_char(stem: str) -> Optional[str]:
     if stem in UNDRAWN_NAMES:
         return UNDRAWN
     char = stem.upper() if len(stem) == 1 else SEED_NAMES.get(stem)
-    return char if char in RENDERABLE or char in SUBSTITUTIONS else None
+    return char if char in DRAWABLE or char in SUBSTITUTIONS else None
 
 
 def seed_binaries(seed_dir: Path) -> Iterator[Tuple[str, np.ndarray]]:
@@ -156,6 +158,10 @@ class TemplateMatcher:
     #: no real character on any of the eight captures comes within 0.10 of
     #: preferring an undrawn seed.
     UNDRAWN_MARGIN = 0.25
+
+    #: Seed score from which seeds overrule a learning proposal that they
+    #: rank lower - see learn().
+    SEED_RANK_THRESHOLD = 0.75
     MAX_TEMPLATES = 5          # max variants stored per character
     CONSENSUS_MIN = 2          # min votes to promote a candidate template
     LATE_CONSENSUS_MIN = 3     # ...and after warmup, when evidence is thinner
@@ -261,6 +267,13 @@ class TemplateMatcher:
     #: Matches _ncc's std < 1e-6 over NORM_SIZE pixels.
     _FLAT = 1e-6 * (NORM_SIZE[0] * NORM_SIZE[1]) ** 0.5
 
+    def _best_seed_for(self, norm: np.ndarray, char: str) -> Optional[float]:
+        """The best score of *char*'s own seeds, or None if it has none."""
+        labels, scores, n_learned = self._scores(norm)
+        own = [float(s) for c, s in zip(labels[n_learned:], scores[n_learned:])
+               if c == char]
+        return max(own) if own else None
+
     def _best_seed(self, norm: np.ndarray) -> Optional[Tuple[str, float]]:
         labels, scores, n_learned = self._scores(norm)
         if len(labels) == n_learned:
@@ -270,8 +283,16 @@ class TemplateMatcher:
 
     # ----- recognition ---------------------------------------------------
 
-    def recognize(self, cell_binary: np.ndarray) -> Optional[Tuple[str, float]]:
-        """Return ``(char, confidence)`` or ``None``."""
+    def recognize(self, cell_binary: np.ndarray,
+                  ruled_out: Optional[frozenset] = None,
+                  ) -> Optional[Tuple[str, float]]:
+        """Return ``(char, confidence)`` or ``None``.
+
+        Args:
+            cell_binary: The preprocessed cell.
+            ruled_out: Characters the caller knows this cell does not hold.
+                Used only to judge an undrawn glyph's margin - see below.
+        """
         glyph = self._extract_glyph(cell_binary)
         if glyph is None:
             return None
@@ -294,8 +315,14 @@ class TemplateMatcher:
 
         if (best_char == UNDRAWN and best_score >= self.FALLBACK_THRESHOLD
                 and best_score < self.MATCH_THRESHOLD):
+            # Rivals the caller has ruled out do not count.  The diamond
+            # beside the E-Jets' STBY looks most like a full stop, by 0.07
+            # to 0.19 depending on the window's size - but full stops are
+            # the geometry pass's to name, and it had already said no.
             drawable = max((float(s) for c, s in zip(labels, scores)
-                            if c != UNDRAWN), default=0.0)
+                            if c != UNDRAWN
+                            and not (ruled_out and c in ruled_out)),
+                           default=0.0)
             if best_score - drawable >= self.UNDRAWN_MARGIN:
                 self._hash_cache[key] = UNDRAWN
                 return (UNDRAWN, best_score)
@@ -387,6 +414,18 @@ class TemplateMatcher:
             logger.debug("Not learning '%s': it matches seed '%s' (%.2f)",
                          char, seed[0], seed[1])
             return
+        # ...and nor where the seeds, even short of a match, rank another
+        # character above this one.  An E-Jets D matched its seed at only
+        # 0.82, was learned as the O that EasyOCR had read, and DELETE then
+        # showed as OELETE on every frame.  Over 720 glyphs of the E-Jets
+        # pages this refuses 4 correct labels - which costs only a template
+        # that was not needed, where a wrong one is permanent.
+        if seed and seed[0] != char and seed[1] >= self.SEED_RANK_THRESHOLD:
+            own = self._best_seed_for(norm, char)
+            if own is None or own < seed[1]:
+                logger.debug("Not learning '%s': seeds prefer '%s' (%.2f)",
+                             char, seed[0], seed[1])
+                return
 
         # ---- candidate voting ----
         #

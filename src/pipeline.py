@@ -187,7 +187,8 @@ class MCDUPipeline:
     def __init__(self, name, capture, client, columns: int, rows: int,
                  settings: Optional[PipelineSettings] = None,
                  small_font_rule: str = "labels_small",
-                 page_labels: str = "") -> None:
+                 page_labels: str = "",
+                 working_cell_height: int = 0) -> None:
         """
         Args:
             name: Identifier for this MCDU ('captain', 'copilot', ...).  Also
@@ -206,6 +207,7 @@ class MCDUPipeline:
         self.rows = rows
         self.small_font_rule = small_font_rule
         self.page_labels = page_labels
+        self.working_cell_height = working_cell_height
         self.settings = settings or PipelineSettings()
 
         self._running = False
@@ -295,6 +297,7 @@ class MCDUPipeline:
                 source_id=self.name,
                 small_font_rule=self.small_font_rule,
                 page_labels=self.page_labels,
+                working_cell_height=self.working_cell_height,
             )
             return parser.parse_grid()
 

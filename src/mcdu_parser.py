@@ -378,7 +378,8 @@ class MCDUParser:
                  columns: int = 24, rows: int = 14,
                  source_id: str = "default",
                  small_font_rule: str = "labels_small",
-                 page_labels: str = "") -> None:
+                 page_labels: str = "",
+                 working_cell_height: int = 0) -> None:
         self.columns = columns
         self.rows = rows
         # How rows map to the hardware's large/small font:
@@ -411,11 +412,31 @@ class MCDUParser:
         max_ch = brightest_channel(image)
         self._bg_floor = int(np.percentile(max_ch, 5))
         # Separator lines go before anything looks at a cell: the blank
-        # test, the geometry pass and the matcher all read this image.
+        # test, the geometry pass and the matcher all read this image.  And
+        # before any scaling below, while they are still crisp: GlassOut's
+        # half-size separator, enlarged first, came out too blurred and wide
+        # to count as a rule, and read as a column of 1s.
         cleaned = erase_rules(image, width / columns, height / rows,
                               self.INK_THRESHOLD + self._bg_floor, max_ch)
         if cleaned is not image:
             image, max_ch = cleaned, brightest_channel(cleaned)
+
+        # A profile can ask for every capture to be read at one cell size,
+        # whatever size its window is drawn at.  The concern above is about
+        # resampling that varies with the crop; this targets a fixed cell
+        # size, and recognition matches glyphs by correlation, which a
+        # resampling difference does not move.  A capture already within a
+        # few percent of the size is left exactly as it is.  Cubic going up,
+        # because nearest-neighbour doubles every stair-step; area going
+        # down, which averages rather than drops pixels.
+        if working_cell_height:
+            scale = working_cell_height / (height / rows)
+            if abs(scale - 1.0) > 0.05:
+                image = cv2.resize(
+                    image, (int(round(width * scale)), int(round(height * scale))),
+                    interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+                height, width = image.shape[:2]
+                max_ch = brightest_channel(image)
         self.image = image
 
         self._col_edges = [round(c * width / columns) for c in range(columns + 1)]
@@ -477,7 +498,13 @@ class MCDUParser:
         fixed level, so nothing white or coloured is binarised differently.
         """
         fixed = self.INK_THRESHOLD + self._bg_floor
-        peak = float(gray.max()) if gray.size else 0.0
+        # The peak away from the top and bottom edges.  The glyph above or
+        # below can smear a pixel across the boundary, at 55-81 once the
+        # E-Jets is enlarged - bright enough to pass for grey text, and it
+        # turned blank cells into dashes.  A grey glyph sits inside its cell.
+        margin = max(1, gray.shape[0] // 16) if gray.ndim == 2 else 0
+        inner = gray[margin:gray.shape[0] - margin] if margin else gray
+        peak = float(inner.max()) if inner.size else 0.0
         if (peak > fixed + self.DIM_INK_CONTRAST
                 or peak < self._bg_floor + self.DIM_INK_MIN_PEAK):
             return float(fixed)
@@ -1167,6 +1194,22 @@ class MCDUParser:
             if not contours:
                 return None
 
+            # A thin sliver at the left or right edge is a neighbour's
+            # stroke over the lattice line, not part of this glyph.  Left
+            # in, it counts as a second piece and stretches the glyph's
+            # box: the E-Jets full stop in ☐☐.☐% caught the edge of the box
+            # beside it, and was lost.
+            cell_w_px = binary.shape[1]
+            slivers = [c for c in contours
+                       if (cv2.boundingRect(c)[0] == 0
+                           or sum(cv2.boundingRect(c)[0::2]) >= cell_w_px)
+                       and cv2.boundingRect(c)[2] <= max(2, cell_w_px // 10)]
+            if slivers and len(slivers) < len(contours):
+                cv2.drawContours(binary, slivers, -1, 0, thickness=cv2.FILLED)
+                contours, hierarchy = cv2.findContours(
+                    binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE,
+                )
+
             coords = cv2.findNonZero(binary)
             if coords is None:
                 return None
@@ -1229,16 +1272,19 @@ class MCDUParser:
             if rel_h <= 0.32 and 0.45 <= aspect <= 1.9:
                 if holes >= 1 and top_at < 0.36:
                     return "°"
-                if holes == 0 and fill(roi) > 0.45 and top_at >= 0.36:
+                # One blob: the E-Jets' '=' is two short bars, small and
+                # low enough to pass the rest, and RNP=1.00 read RNP.1.00.
+                if (holes == 0 and fill(roi) > 0.45 and top_at >= 0.36
+                        and len(contours) == 1):
                     return "."
 
             # --- colon ---------------------------------------------------
             # Two small blobs stacked in a narrow column.  Of the 2831
             # labelled glyphs, the five colons are the only ones that
             # match, so this needs no further qualification.  Times on
-            # the ATR are written 16H39:10, and the colon reaches the
-            # CDU as a full stop - the font has no colon - but it has to
-            # be read before it can be translated.
+            # the ATR are written 16H39:10.  The Boeing font draws a
+            # colon; on fonts not known to, it reaches the CDU as a full
+            # stop - but either way it has to be read first.
             if (len(contours) == 2 and aspect < 0.55
                     and 0.20 < rel_h < 0.55
                     and glyph_w < cell_w * 0.45):
@@ -1296,6 +1342,19 @@ class MCDUParser:
             # is why the head has to show: the third of the glyph under the
             # arrowhead carries appreciably more ink than the third under
             # the tail, while a plus sign is symmetric about its centre.
+            # A chevron in a large font runs nearly the cell's height: the
+            # E-Jets "< RETURN" prompt is 89% of it, past the 72% the tests
+            # below allow, and its chevron went missing.  The same profile
+            # tests, for the taller ones only.
+            if (0.45 <= aspect <= 1.40 and 0.72 < rel_h <= 0.95
+                    and holes == 0):
+                if (lead_mid <= 0.05 and lead_ends >= 0.68
+                        and left_stem <= 0.40 and trail_mid < 0.95):
+                    return "<"
+                if (trail_mid >= 0.95 and trail_ends <= 0.35
+                        and right_stem <= 0.40 and lead_mid > 0.05):
+                    return ">"
+
             if (0.45 <= aspect <= 1.40 and 0.28 <= rel_h <= 0.72
                     and holes == 0):
                 # Solid triangles first.  The E-Jets draws its prompts as
@@ -1323,18 +1382,64 @@ class MCDUParser:
                 if (trail_mid >= 0.95 and trail_ends <= 0.35
                         and right_stem <= 0.40):
                     return ">"
-                if lead_mid <= 0.05 and trail_mid >= 0.95:
-                    if (0.15 <= lead_ends <= 0.45 and trail_ends <= 0.60
-                            and left_mass >= right_mass * 1.35):
-                        return "←"
-                    if (lead_ends >= 0.55 and trail_ends >= 0.80
-                            and right_mass >= left_mass * 1.35):
-                        return "→"
+                arrow = self._shafted_arrow(roi > 0)
+                if arrow:
+                    return arrow
+
+            # Up and down arrows: the same test on the glyph turned on its
+            # side, top to the left.  The E-Jets PROGRESS page marks wind
+            # components with them, and the down arrow read as an L.
+            if (0.45 <= aspect <= 1.40 and 0.28 <= rel_h <= 0.72
+                    and holes == 0):
+                turned = self._shafted_arrow((roi > 0).T)
+                if turned:
+                    return {"←": "↑", "→": "↓"}[turned]
 
             return None
         except Exception as exc:
             logger.debug("Contour detection error: %s", exc)
             return None
+
+    @staticmethod
+    def _shafted_arrow(ink: np.ndarray) -> Optional[str]:
+        """'←' or '→' if *ink* (a glyph's bounding box) is an arrow with a shaft.
+
+        An arrow is a chevron with a shaft, so its middle row reaches both
+        sides.  That alone also describes '+' and H, which is why the head
+        has to show: the third of the glyph under the arrowhead carries
+        appreciably more ink than the third under the tail, and its top and
+        bottom rows keep away from the tail end.
+        """
+        h, w = ink.shape
+        if h < 3 or w < 3:
+            return None
+        has_ink = ink.any(axis=1)
+        span = max(w - 1, 1)
+        lead = np.where(has_ink, ink.argmax(axis=1), w - 1) / span
+        trail = np.where(has_ink, (w - 1) - ink[:, ::-1].argmax(axis=1), 0) / span
+        band = max(1, h // 5)
+        if lead[h // 2] > 0.05 or trail[h // 2] < 0.95:
+            return None
+        lead_ends = min(float(lead[:band].mean()), float(lead[-band:].mean()))
+        trail_ends = max(float(trail[:band].mean()), float(trail[-band:].mean()))
+        third = max(1, w // 3)
+        left_mass = np.count_nonzero(ink[:, :third])
+        right_mass = np.count_nonzero(ink[:, -third:])
+        if (0.15 <= lead_ends <= 0.45 and trail_ends <= 0.60
+                and left_mass >= right_mass * 1.35):
+            return "←"
+        if (lead_ends >= 0.55 and trail_ends >= 0.80
+                and right_mass >= left_mass * 1.35):
+            return "→"
+        # The mirror image of the first test.  The E-Jets' small arrow has
+        # its head mid-glyph, top and bottom rows starting 0.41-0.43 of the
+        # way across, where the Airbus arrow the test above was set from
+        # puts them at the far edge.  Every letter measured starts within
+        # 0.12 of the left: a stem, or the ends of its strokes.
+        if (lead_ends >= 0.30 and 0.50 <= trail_ends <= 0.85
+                and right_mass >= left_mass * 1.35):
+            return "→"
+        return None
 
     # ------------------------------------------------------------------
     #  Same shape, same character
@@ -1574,7 +1679,10 @@ class MCDUParser:
                 if (row, col) in structural:
                     template_results[(row, col)] = structural[(row, col)]
                     continue
-                result = matcher.recognize(self.cell_binary(row, col))
+                # Geometry has looked at this cell and named nothing, so
+                # none of its characters can be here.
+                result = matcher.recognize(self.cell_binary(row, col),
+                                           ruled_out=GEOMETRY_OWNED)
                 if result:
                     template_results[(row, col)] = result[0]
                 else:

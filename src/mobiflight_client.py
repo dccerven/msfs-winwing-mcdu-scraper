@@ -7,6 +7,7 @@ import websockets
 import websockets.asyncio.client as ws_client
 import json
 import logging
+from typing import Optional
 
 from mcdu_charset import RENDERABLE, SUBSTITUTIONS, sanitise_char
 
@@ -19,7 +20,8 @@ _CDU_SAFE_CHARS = RENDERABLE
 _CDU_CHAR_MAP = SUBSTITUTIONS
 
 
-def sanitise_display_data(display_data: list) -> list:
+def sanitise_display_data(display_data: list,
+                          font: Optional[str] = None) -> list:
     """Map a 336-cell display grid onto glyphs the CDU font can render.
 
     Any character that is neither in ``_CDU_CHAR_MAP`` nor already in
@@ -31,6 +33,7 @@ def sanitise_display_data(display_data: list) -> list:
     Args:
         display_data: List of elements, each either ``[]`` or
             ``[char, colour, size]``.
+        font: The hardware font loaded; see mcdu_charset.FONT_EXTRAS.
 
     Returns:
         A new list of the same length with every character sanitised.
@@ -40,7 +43,7 @@ def sanitise_display_data(display_data: list) -> list:
         if not cell:
             sanitised.append([])
             continue
-        out = [sanitise_char(cell[0]), cell[1], cell[2]]
+        out = [sanitise_char(cell[0], font), cell[1], cell[2]]
         # Optional fourth element: reverse video.  Only sent when set, so
         # ordinary cells stay three-element as every other integration
         # sends them.
@@ -215,7 +218,7 @@ class MobiFlightClient:
             [char, colour, size] - optionally [char, colour, size, inverted]
             for reverse video.
         """
-        sanitised = sanitise_display_data(display_data)
+        sanitised = sanitise_display_data(display_data, self.font)
 
         if logger.isEnabledFor(logging.DEBUG):
             non_empty = sum(1 for cell in sanitised if cell)

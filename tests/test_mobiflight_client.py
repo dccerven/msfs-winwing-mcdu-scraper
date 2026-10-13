@@ -71,6 +71,29 @@ class TestSanitiseDisplayData(unittest.TestCase):
         self.assertEqual(result[0][0], "[")
         self.assertEqual(result[1][0], "]")
 
+    def test_boeing_font_draws_its_extras(self):
+        """Checked on the hardware: these draw in the Boeing font."""
+        chars = "()*:,;%&#@!?'\"$="
+        result = sanitise_display_data([[c, "w", 0] for c in chars], "Boeing")
+        self.assertEqual("".join(cell[0] for cell in result), chars)
+
+    def test_untested_fonts_keep_the_substitutes(self):
+        result = sanitise_display_data(
+            [["(", "w", 0], ["=", "w", 0], ["%", "w", 0]], "AirbusThales")
+        self.assertEqual([cell[0] for cell in result], ["[", "-", " "])
+
+    def test_boeing_font_keeps_the_symbols(self):
+        """Arrows and entry boxes draw on the hardware in normal use."""
+        result = sanitise_display_data(
+            [[c, "w", 0] for c in "←→☐"], "Boeing")
+        self.assertEqual("".join(cell[0] for cell in result), "←→☐")
+
+    def test_boeing_font_still_drops_what_it_cannot_draw(self):
+        result = sanitise_display_data(
+            [["{", "w", 0], ["_", "w", 0], ["a", "w", 0], ["^", "w", 0]],
+            "Boeing")
+        self.assertEqual([cell[0] for cell in result], ["[", "-", "A", " "])
+
     def test_output_length_matches_input(self):
         data = [[] if i % 2 else ["X", "w", 0] for i in range(336)]
         self.assertEqual(len(sanitise_display_data(data)), 336)

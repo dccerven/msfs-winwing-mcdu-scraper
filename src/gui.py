@@ -136,7 +136,8 @@ class ScraperWorker(QObject):
                  columns: int = 24, rows: int = 14,
                  small_font_rule: str = "labels_small",
                  page_labels: str = "",
-                 font: str = "AirbusThales") -> None:
+                 font: str = "AirbusThales",
+                 working_cell_height: int = 0) -> None:
         super().__init__()
         self.config = config
         self.specs = list(specs)
@@ -145,6 +146,7 @@ class ScraperWorker(QObject):
         self.small_font_rule = small_font_rule
         self.page_labels = page_labels
         self.font = font
+        self.working_cell_height = working_cell_height
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pipelines: List[MCDUPipeline] = []
         self._stopping = False
@@ -216,6 +218,7 @@ class ScraperWorker(QObject):
                 rows=self.rows,
                 small_font_rule=self.small_font_rule,
                 page_labels=self.page_labels,
+                working_cell_height=self.working_cell_height,
                 settings=PipelineSettings(
                     fps=self.config.get_capture_fps(),
                     enable_caching=self.config.get_enable_caching(),
@@ -713,6 +716,7 @@ class MCDUScraperWindow(QMainWindow):
             columns=columns, rows=rows,
             small_font_rule=profile.small_font_rule,
             page_labels=profile.page_labels, font=font,
+            working_cell_height=profile.working_cell_height,
         )
         self.thread = QThread()
         self.worker.moveToThread(self.thread)

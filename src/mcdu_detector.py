@@ -678,6 +678,15 @@ _SCREEN_DARK = 8
 #: Smallest share of the image an enclosed screen can take.
 _SCREEN_MIN_AREA = 0.05
 
+#: Height an enclosed screen taller than this is scaled down to before the
+#: grid is looked for.  The pitch search has fixed pixel limits - a rule is
+#: at most 6px thick - and a window can be drawn at any size: at one and a
+#: half times the E-Jets pop-out its separator is 7px wide, stopped counting
+#: as a rule, and the rows it crossed merged again.  A smaller screen is
+#: searched as it is; scaling GlassOut's half-size one up blurred its rows
+#: and cost the grid 7px of height.
+_SCREEN_WORKING_HEIGHT = 700
+
 
 def _find_screen(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """The display, when the capture holds a whole CDU rather than a screen.
@@ -761,13 +770,22 @@ def detect_mcdu_region(
     screen = _find_screen(image)
     if screen is not None:
         sx, sy, sw, sh = screen
-        found = _accept_grid(_detect_via_pitch(image[sy:sy + sh, sx:sx + sw],
-                                               columns, rows),
-                             sw * sh, columns, rows, min_area_frac,
-                             max_area_frac)
+        scale = min(1.0, _SCREEN_WORKING_HEIGHT / sh)
+        view = image[sy:sy + sh, sx:sx + sw]
+        if scale < 0.95:
+            view = cv2.resize(view, (int(round(sw * scale)),
+                                     _SCREEN_WORKING_HEIGHT),
+                              interpolation=cv2.INTER_AREA)
+        else:
+            scale = 1.0
+        found = _accept_grid(_detect_via_pitch(view, columns, rows),
+                             view.shape[0] * view.shape[1], columns, rows,
+                             min_area_frac, max_area_frac)
         if found is not None:
-            gx, gy, gw, gh = found
-            grid = (gx + sx, gy + sy, gw, gh)
+            gx, gy, gw, gh = (v / scale for v in found)
+            grid = (int(round(gx)) + sx, int(round(gy)) + sy,
+                    int(round(gw)), int(round(gh)))
+            gw, gh = grid[2], grid[3]
             logger.info(
                 "Detected MCDU grid by pitch on the screen at x=%d y=%d: "
                 "x=%d, y=%d, w=%d, h=%d (cell %.2fx%.2f px)",

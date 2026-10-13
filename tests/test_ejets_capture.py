@@ -3,8 +3,10 @@ Embraer E-Jets MCDU, from real captures.
 
 The tests/data/ejets_window_*.png captures are the whole pop-out window as
 Auto Detect sees it: the CDU unit with its bezel, line-select keys and
-keyboard, the screen in the top half.  tests/data/ejet_mcdu.png is the RADIO
-screen alone, cropped by hand.
+keyboard, the screen in the top half.  tests/data/ejets_glassout_radio.png
+is GlassOut's cockpit strip, with the MCDU drawn at half size beside the
+other displays.  tests/data/ejet_mcdu.png is the RADIO screen alone, cropped
+by hand.
 
 What these exposed, all of it now read correctly:
 
@@ -21,8 +23,10 @@ What these exposed, all of it now read correctly:
 * grey (unavailable) prompts peak at 78-89, under the fixed ink threshold,
   and DES FORECAST read as OES CAAT;
 * the fringe of thin white glyphs coloured them grey;
-* the swap icons, the diamond, the filled square and '%' came out as
-  letters instead of blank.
+* the swap icons, the diamond and the filled square came out as letters
+  instead of blank, and '%' as a '2';
+* at GlassOut's half size the slashed zero blurred into an '8', until the
+  profile's minimum cell height brought them up to size before reading.
 """
 
 import tempfile
@@ -45,7 +49,7 @@ DATA = Path(__file__).parent / "data"
 SCREEN = DATA / "ejet_mcdu.png"
 
 # Each page as displayed.  '?' marks a glyph the CDU cannot draw - the swap
-# icons, the diamond, the filled square, '%' - which must come out blank.
+# icons, the diamond, the filled square - which must come out blank.
 
 RADIO = [
     "         RADIO       1/2",
@@ -110,14 +114,86 @@ PERF_INIT = [
     "           (GAUGE) FUEL ",
     "            (5000)  5000",
     " TO CG        GROSS WT  ",
-    "☐☐.☐?                   ",
+    "☐☐.☐%                   ",
     "                        ",
     "                        ",
     "                        ",
 ]
 
+#: The RADIO page again, later in the flight, in GlassOut's cockpit strip:
+#: the MCDU drawn at half size beside the PFD, MFD and EICAS.
+GLASSOUT_RADIO = [
+    "         RADIO       1/2",
+    " COM1              COM2 ",
+    "?124.000        124.850?",
+    "                        ",
+    " 124.850        124.850 ",
+    " NAV1   FMS  FMS   NAV2 ",
+    "?111.50 AUTOAUTO 111.50?",
+    "                        ",
+    " 113.90          113.90 ",
+    "          738      XPDR ",
+    "←TCAS/XPDR         7000→",
+    "                        ",
+    "?STBY TA/RA       IDENT?",
+    "                        ",
+]
+
+#: PROGRESS in GlassOut.  Its '=' is two short bars, once read as '.'; the
+#: diamond beside DEST must stay blank; and enlarged, the bottoms of each
+#: row's glyphs smeared into the row below as dashes.
+GLASSOUT_PROGRESS = [
+    "      738 PROGRESS   1/3",
+    " FROM  ATA   ALT  FUEL  ",
+    "                        ",
+    " TO    ETA   DTG        ",
+    "                        ",
+    " NEXT                   ",
+    "                        ",
+    " DEST                   ",
+    "?                       ",
+    "  WIND            TEMP  ",
+    " 180T/ 20          24°C ",
+    "   GPS RNP=1.00 EPU=0.00",
+    "IBZY111.50    IBZY111.50",
+    "                        ",
+]
+
+#: PROGRESS 3/3 in a GlassOut fragment window, large: 47x64px cells.  Its
+#: rounded O read as an entry box, and the small wind-component arrows as
+#: '+' and 'L'.
+FRAGMENT_PROGRESS3 = [
+    "      738 PROGRESS   3/3",
+    "  FUEL QTY    GROSS WT  ",
+    "  2478            53010 ",
+    "  WIND       XTK ERROR  ",
+    " 188T/21             NM ",
+    "  WIND →   SPD/ALT CMD  ",
+    " ↓-21  0     -214/---   ",
+    "  TRACK   DRIFT    HDG  ",
+    " 235°      066°    169° ",
+    "                        ",
+    "←AIR DATA   CLOSEST APT→",
+    "                        ",
+    "←RNP          VNAV DATA→",
+    "                        ",
+]
+
+#: NEW MESSAGES in the fragment window.  A thin chevron 89% of its cell
+#: high, a D the seeds matched at only 0.82, and an asterisk.
+FRAGMENT_NEW_MESSAGES = [
+    "NEW MESSAGES         1/1",
+] + ["                        "] * 10 + [
+    "                   READY",
+    "< RETURN     DELETE LOG*",
+    "                        ",
+]
+
 #: window capture -> (grid Auto Detect must land near, page text)
 WINDOWS = {
+    "ejets_fragment_progress3.png": ((14, 49, 1147, 897), FRAGMENT_PROGRESS3),
+    "ejets_glassout_progress.png": ((1679, 17, 418, 326), GLASSOUT_PROGRESS),
+    "ejets_glassout_radio.png": ((1679, 17, 418, 326), GLASSOUT_RADIO),
     "ejets_window_radio.png": ((883, 57, 790, 618), RADIO),
     "ejets_window_perf_index.png": ((880, 57, 794, 621), PERF_INDEX),
     "ejets_window_perf_init.png": ((881, 57, 794, 618), PERF_INIT),
@@ -218,8 +294,10 @@ class _ReadsThePage:
         mcdu_templates._template_matcher = TemplateMatcher(
             template_path=Path(cls._tmpdir.name) / "ejets.npz",
             seed_dir=PROFILES["ejets"].seed_dir())
-        cls.parsed = MCDUParser(cls.crop(), columns=24, rows=14,
-                                source_id=cls.__name__).parse_grid()
+        cls.parsed = MCDUParser(
+            cls.crop(), columns=24, rows=14, source_id=cls.__name__,
+            working_cell_height=PROFILES["ejets"].working_cell_height,
+        ).parse_grid()
 
     @classmethod
     def tearDownClass(cls):
@@ -288,6 +366,44 @@ class TestRadioWindow(_WindowRead, unittest.TestCase):
     def test_solid_triangles_are_arrows(self):
         self.assertEqual(self._got(10, 0), "←")
         self.assertEqual(self._got(10, 23), "→")
+
+
+class TestGlassOutRadio(_WindowRead, unittest.TestCase):
+    """Half-size cells: read only because the profile upscales them."""
+    window = "ejets_glassout_radio.png"
+
+
+class TestGlassOutProgress(_WindowRead, unittest.TestCase):
+    window = "ejets_glassout_progress.png"
+
+
+class TestFragmentProgress3(_WindowRead, unittest.TestCase):
+    """Large cells, read down to the working size."""
+    window = "ejets_fragment_progress3.png"
+
+    def test_wind_arrows_and_round_o(self):
+        self.assertEqual(self._got(0, 12), "O")
+        self.assertEqual(self._got(5, 7), "→")
+        self.assertEqual(self._got(6, 1), "↓")
+
+
+@unittest.skipIf(not (DATA / "ejets_fragment_new_messages.png").exists(),
+                 "E-Jets NEW MESSAGES capture missing")
+class TestFragmentNewMessages(_ReadsThePage, unittest.TestCase):
+    """Read on the grid Auto Detect found on a fuller page of this window.
+
+    Three rows of text are too few to find a grid by - the only close pair
+    is a label and its value, which sit nearer each other than a row - and
+    Auto Detect is not asked to: it is run once per window, and the box
+    stays as the pages change.
+    """
+
+    truth = FRAGMENT_NEW_MESSAGES
+
+    @classmethod
+    def crop(cls):
+        x, y, w, h = 13, 49, 1148, 893
+        return load(DATA / "ejets_fragment_new_messages.png")[y:y + h, x:x + w]
 
 
 class TestPerfInitWindow(_WindowRead, unittest.TestCase):

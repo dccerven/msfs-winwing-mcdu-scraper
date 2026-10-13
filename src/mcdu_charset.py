@@ -14,7 +14,7 @@ one-line change here rather than three edits that can drift apart.
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet
+from typing import Dict, FrozenSet, Optional
 
 # ---------------------------------------------------------------------------
 #  What the WinWing CDU's AirbusThales font is expected to draw.
@@ -108,13 +108,39 @@ SUBSTITUTIONS: Dict[str, str] = {
 }
 
 
-def sanitise_char(char: str) -> str:
-    """Map a single character onto something the CDU can render."""
+# ---------------------------------------------------------------------------
+#  What a particular hardware font draws beyond RENDERABLE.
+# ---------------------------------------------------------------------------
+#  Checked on a WinWing CDU by sending each candidate straight to the device
+#  and looking.  Only listed glyphs are trusted: everything else in the test
+#  - { } _ ~ | \ ^ `, lower case, and the arrow and box symbols beyond the
+#  ones in RENDERABLE - came out blank or garbled.  A font not listed here
+#  has not been tested, and keeps the conservative set and substitutions.
+FONT_EXTRAS: Dict[str, FrozenSet[str]] = {
+    # Tested 2026-10-12.  The E-Jets shows RNP=1.00, (GAUGE) and TO CG %,
+    # which reached the CDU as RNP-1.00, [GAUGE] and a blank.
+    "Boeing": frozenset("()*:,;%&#@!?'\"$="),
+}
+
+#: Every character some font can draw - what a recogniser may name.
+DRAWABLE: FrozenSet[str] = RENDERABLE.union(*FONT_EXTRAS.values())
+
+
+def sanitise_char(char: str, font: Optional[str] = None) -> str:
+    """Map a single character onto something the CDU can render.
+
+    Args:
+        char: The character read off the screen.
+        font: The hardware font loaded, if known.  Characters it is known
+            to draw (FONT_EXTRAS) are sent as they are.
+    """
     if not char:
         return " "
     if len(char) > 1:
         # Multi-character strings can arrive from the contour fallback.
         char = char[0]
+    if font and char in FONT_EXTRAS.get(font, ()):
+        return char
     if char in SUBSTITUTIONS:
         return SUBSTITUTIONS[char]
     if char in RENDERABLE:

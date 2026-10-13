@@ -18,14 +18,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 import mcdu_templates
 from aircraft_profiles import PROFILES
-from mcdu_charset import DIGITS, LETTERS, RENDERABLE, SUBSTITUTIONS, UNDRAWN
+from mcdu_charset import DIGITS, DRAWABLE, LETTERS, SUBSTITUTIONS, UNDRAWN
 from mcdu_templates import SEED_ROOT, TemplateMatcher, seed_binaries, seed_char
 
 EJETS = SEED_ROOT / "ejets"
 
 #: Seed files for glyphs the CDU cannot draw: matched so they read as blank.
-UNDRAWN_FILES = {"ampersand", "ampersand_large", "percent", "square_filled",
-                 "swap_arrows", "arrow_left_right_small"}
+UNDRAWN_FILES = {"square_filled", "swap_arrows", "arrow_left_right_small"}
 
 
 def _png_binary(name):
@@ -49,7 +48,10 @@ class TestSeedNames(unittest.TestCase):
         self.assertEqual(seed_char("7_large"), "7")
         self.assertEqual(seed_char("degree"), "°")
         self.assertEqual(seed_char("paren_left_large"), "(")
-        self.assertEqual(seed_char("ampersand"), UNDRAWN)
+        self.assertEqual(seed_char("ampersand"), "&")
+        self.assertEqual(seed_char("percent"), "%")
+        self.assertEqual(seed_char("hash"), "#")
+        self.assertEqual(seed_char("asterisk_large"), "*")
         self.assertEqual(seed_char("swap_arrows"), UNDRAWN)
         # Not drawable, but the CDU shows '-' for it (SUBSTITUTIONS).
         self.assertEqual(seed_char("equals"), "=")
@@ -63,7 +65,7 @@ class TestSeedNames(unittest.TestCase):
             if path.stem in UNDRAWN_FILES:
                 self.assertEqual(char, UNDRAWN, path.name)
             else:
-                self.assertTrue(char in RENDERABLE or char in SUBSTITUTIONS,
+                self.assertTrue(char in DRAWABLE or char in SUBSTITUTIONS,
                                 f"{path.name} -> {char!r}")
 
     def test_alpha_channel_carries_the_ink(self):
