@@ -146,6 +146,36 @@ class TestPerformanceSettings(unittest.TestCase):
         self.assertEqual(make_config().get_max_retries(), 3)
 
 
+class TestOutput(unittest.TestCase):
+    """Choosing between MobiFlight and SPAD.next."""
+
+    def test_defaults_to_mobiflight(self):
+        self.assertEqual(make_config().get_output(), "mobiflight")
+
+    def test_spad_can_be_chosen(self):
+        cfg = Config(write_raw({**BASE, "output": "SPAD"}))
+        self.assertEqual(cfg.get_output(), "spad")
+
+    def test_unknown_output_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            Config(write_raw({**BASE, "output": "simappro"}))
+        self.assertIn("simappro", str(ctx.exception))
+
+    def test_spad_section_is_optional(self):
+        cfg = make_config()
+        self.assertEqual(cfg.get_spad_url(), "ws://localhost:8088")
+        self.assertEqual(cfg.get_spad_message_type(), "wt737")
+        self.assertEqual(cfg.get_spad_aircraft(), "")
+
+    def test_spad_settings_are_read(self):
+        cfg = make_config(spad={"url": "ws://10.0.0.5:9000",
+                                "message_type": "wt21",
+                                "aircraft": "E175"})
+        self.assertEqual(cfg.get_spad_url(), "ws://10.0.0.5:9000")
+        self.assertEqual(cfg.get_spad_message_type(), "wt21")
+        self.assertEqual(cfg.get_spad_aircraft(), "E175")
+
+
 class TestShippedExample(unittest.TestCase):
     """config.yaml.example must actually load."""
 
@@ -164,11 +194,13 @@ class TestShippedExample(unittest.TestCase):
         """
         example = Path(__file__).parent.parent / "config.yaml.example"
         data = yaml.safe_load(example.read_text(encoding="utf-8"))
-        self.assertEqual(set(data), {"mobiflight", "performance"})
+        self.assertEqual(set(data),
+                         {"output", "mobiflight", "spad", "performance"})
         self.assertEqual(
             set(data["mobiflight"]),
             {"captain_url", "copilot_url", "max_retries"},
         )
+        self.assertEqual(set(data["spad"]), {"url", "message_type"})
         self.assertEqual(
             set(data["performance"]), {"capture_fps", "enable_caching"},
         )

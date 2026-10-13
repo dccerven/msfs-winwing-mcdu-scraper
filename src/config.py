@@ -39,6 +39,13 @@ class Config:
         "y": "yellow",
     }
 
+    #: Where the scraped screen can be sent.
+    OUTPUTS = ("mobiflight", "spad")
+
+    #: SPAD.next defaults, matching dementedmonkey's CJ4/737 MCDU mod.
+    SPAD_DEFAULT_URL = "ws://localhost:8088"
+    SPAD_DEFAULT_MESSAGE_TYPE = "wt737"
+
     def __init__(self, config_path: Optional[str] = None):
         """
         Initialize configuration
@@ -94,6 +101,7 @@ class Config:
             if section not in self.config_data:
                 raise ValueError(
                     f"Missing required configuration section: {section}")
+        self.get_output()       # raises on an unknown value
 
         logger.info("Configuration validation passed")
 
@@ -131,6 +139,31 @@ class Config:
     def get_max_retries(self) -> int:
         """Get max WebSocket connection retries"""
         return self.config_data['mobiflight'].get('max_retries', 3)
+
+    def get_output(self) -> str:
+        """Where the screen goes by default: 'mobiflight' or 'spad'."""
+        output = str(self.config_data.get('output') or 'mobiflight').lower()
+        if output not in self.OUTPUTS:
+            raise ValueError(
+                f"Unknown 'output: {output}' in config. "
+                f"Use one of: {', '.join(self.OUTPUTS)}.")
+        return output
+
+    def _spad(self) -> Dict[str, Any]:
+        return self.config_data.get('spad') or {}
+
+    def get_spad_url(self) -> str:
+        """SPAD.next's MCDU WebSocket (its SimBridge-style relay)."""
+        return self._spad().get('url') or self.SPAD_DEFAULT_URL
+
+    def get_spad_message_type(self) -> str:
+        """The aircraft type tag sent in ``update:<type>:`` messages."""
+        return (self._spad().get('message_type')
+                or self.SPAD_DEFAULT_MESSAGE_TYPE)
+
+    def get_spad_aircraft(self) -> str:
+        """Sent as the update's ``aircraft`` field (the sim's ATC MODEL)."""
+        return str(self._spad().get('aircraft') or '')
 
     def get_capture_fps(self) -> int:
         """Get capture frame rate, clamped to [1, 120]."""

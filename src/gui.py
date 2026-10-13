@@ -55,6 +55,7 @@ from mcdu_parser import _prev_row_imgs, _prev_row_ocr
 from mobiflight_client import MobiFlightClient
 from pipeline import MCDUPipeline, PipelineSettings
 from region_selector import RegionSelectorDialog
+from spad_client import SpadClient
 
 MSFS_KEYWORDS = ('microsoft flight simulator', 'msfs', 'flight simulator',
                  'mcdu', 'cdu', 'fms', 'airbus', 'boeing', 'uns')
@@ -62,6 +63,9 @@ MSFS_KEYWORDS = ('microsoft flight simulator', 'msfs', 'flight simulator',
 #: Written alongside the log pane so a session can be reported after the fact.
 LOG_FILENAME = 'cdu_scraper.log'
 NO_MOBIFLIGHT = os.environ.get('MSFS_SCRAPER_NO_MOBIFLIGHT') == '1'
+
+#: Output choices offered in the GUI: config value -> label.
+OUTPUT_LABELS = {"mobiflight": "MobiFlight", "spad": "SPAD.next"}
 
 
 class _LogEmitter(QObject):
@@ -137,7 +141,8 @@ class ScraperWorker(QObject):
                  small_font_rule: str = "labels_small",
                  page_labels: str = "",
                  font: str = "AirbusThales",
-                 working_cell_height: int = 0) -> None:
+                 working_cell_height: int = 0,
+                 output: str = "mobiflight") -> None:
         super().__init__()
         self.config = config
         self.specs = list(specs)
@@ -147,6 +152,7 @@ class ScraperWorker(QObject):
         self.page_labels = page_labels
         self.font = font
         self.working_cell_height = working_cell_height
+        self.output = output
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pipelines: List[MCDUPipeline] = []
         self._stopping = False
@@ -191,23 +197,35 @@ class ScraperWorker(QObject):
         for pipeline in list(self._pipelines):
             loop.call_soon_threadsafe(pipeline.stop)
 
-    async def _drive(self, spec: McduSpec) -> None:
-        """Connect one MCDU and run its pipeline until stopped."""
+    def _make_client(self, spec: McduSpec):
+        """The client that carries one MCDU's screen to the hardware."""
         if NO_MOBIFLIGHT:
-            client = NoOpMobiFlightClient()
             logging.getLogger(__name__).info(
                 "[%s] Test mode: MobiFlight connection disabled", spec.name,
             )
-        else:
-            client = MobiFlightClient(
+            return NoOpMobiFlightClient()
+        if self.output == "spad":
+            return SpadClient(
                 websocket_uri=spec.websocket_uri,
+                side="right" if spec.name == "copilot" else "left",
+                message_type=self.config.get_spad_message_type(),
+                aircraft=self.config.get_spad_aircraft(),
                 font=self.font,
                 max_retries=self.config.get_max_retries(),
             )
+        return MobiFlightClient(
+            websocket_uri=spec.websocket_uri,
+            font=self.font,
+            max_retries=self.config.get_max_retries(),
+        )
+
+    async def _drive(self, spec: McduSpec) -> None:
+        """Connect one MCDU and run its pipeline until stopped."""
+        client = self._make_client(spec)
         client_task = asyncio.create_task(client.run())
         try:
             if not await self._wait_for(client.connected):
-                return          # Stop was pressed before MobiFlight answered
+                return          # Stop was pressed before the connection opened
             self.connected.emit(spec.name)
 
             pipeline = MCDUPipeline(
@@ -285,6 +303,9 @@ class MCDUScraperWindow(QMainWindow):
         try:
             self.config = Config()
             self.log("Configuration loaded successfully")
+            index = self.output_combo.findData(self.config.get_output())
+            if index >= 0:
+                self.output_combo.setCurrentIndex(index)
         except Exception as exc:
             self.log(f"Warning: Could not load config: {exc}", "WARNING")
             self.config = None
@@ -346,6 +367,15 @@ class MCDUScraperWindow(QMainWindow):
             self.profile_combo.addItem(profile.label, profile.id)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         grid.addWidget(self.profile_combo, 2, 1)
+
+        grid.addWidget(QLabel("Output:"), 3, 0)
+        self.output_combo = QComboBox()
+        for value, label in OUTPUT_LABELS.items():
+            self.output_combo.addItem(label, value)
+        self.output_combo.setToolTip(
+            "Send the screen to the WinWing CDU through MobiFlight or "
+            "through SPAD.next")
+        grid.addWidget(self.output_combo, 3, 1)
 
         grid.setColumnStretch(1, 1)
         return group
@@ -634,7 +664,13 @@ class MCDUScraperWindow(QMainWindow):
     # ------------------------------------------------------------------
     #  Start / stop
     # ------------------------------------------------------------------
+    def _current_output(self) -> str:
+        return self.output_combo.currentData()
+
     def _url_for(self, mcdu: str) -> str:
+        if self._current_output() == "spad":
+            # One relay for both CDUs; the side travels in the message.
+            return self.config.get_spad_url()
         return (self.config.get_copilot_url() if mcdu == "copilot"
                 else self.config.get_captain_url())
 
@@ -709,7 +745,13 @@ class MCDUScraperWindow(QMainWindow):
         # each profile has its own template store.
         set_template_store(profile.template_path(), profile.seed_dir())
         font = self.config.get_font() or profile.font
+        output = self._current_output()
         self.log(f"Profile {profile.id}: grid {columns}x{rows}, font {font}")
+        if output == "spad":
+            self.log(f"Output: SPAD.next at {self.config.get_spad_url()} "
+                     f"(update:{self.config.get_spad_message_type()})")
+        else:
+            self.log("Output: MobiFlight")
 
         self.worker = ScraperWorker(
             self.config, specs,
@@ -717,13 +759,16 @@ class MCDUScraperWindow(QMainWindow):
             small_font_rule=profile.small_font_rule,
             page_labels=profile.page_labels, font=font,
             working_cell_height=profile.working_cell_height,
+            output=output,
         )
         self.thread = QThread()
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.start)
+        service = OUTPUT_LABELS[output]
         self.worker.connected.connect(
             lambda name: self.log(
-                f"[{name}] {'Test mode: MobiFlight disabled' if NO_MOBIFLIGHT else 'Connected to WinWing CDU'}"
+                f"[{name}] Test mode: MobiFlight disabled" if NO_MOBIFLIGHT
+                else f"[{name}] Connected to WinWing CDU via {service}"
             )
         )
         self.worker.failed.connect(self._on_worker_failed)
@@ -742,7 +787,8 @@ class MCDUScraperWindow(QMainWindow):
         """Freeze the selection controls while a capture is running."""
         for widget in (self.window_combo, self.select_area_button,
                        self.copilot_group, self.show_all_checkbox,
-                       self.profile_combo, self.grid_override_group):
+                       self.profile_combo, self.output_combo,
+                       self.grid_override_group):
             widget.setEnabled(enabled)
 
     def _release_captures(self) -> None:

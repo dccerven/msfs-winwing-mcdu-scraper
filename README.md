@@ -11,7 +11,7 @@ window and sends it to WinWing CDU hardware via WebSocket.
 - Character recognition in three passes: entry boxes and punctuation from
   glyph geometry, then learned templates, then EasyOCR for the rest
 - Per-cell colour and font-size detection
-- MobiFlight-compatible data format
+- Output through MobiFlight, or through SPAD.next
 - Aircraft profiles: Airbus MCDU, Boeing CDU, UNS-1, or a custom grid —
   glyphs are learned at runtime, so new fonts teach themselves
 - Optional second MCDU (co-pilot), each on its own capture pipeline
@@ -23,7 +23,8 @@ window and sends it to WinWing CDU hardware via WebSocket.
 ### Software
 
 - **Operating System**: Windows 10/11
-- **MobiFlight**: WinWing MCDU Connector must be running
+- **MobiFlight** WinWing MCDU Connector, **or SPAD.next** (Complete
+  Edition, which its CDU support needs), running
 - **MSFS 2020/2024**: with an aircraft whose FMS has a pop-out window
 - **Python**: 3.9-3.13 (only when running from source; PySide6 sets the range)
 
@@ -64,7 +65,7 @@ copy config.yaml.example config.yaml
 
 1. Start MSFS with your aircraft
 2. Pop out the MCDU window (right-click the MCDU → "Pop Out")
-3. Start the MobiFlight WinWing MCDU Connector
+3. Start the MobiFlight WinWing MCDU Connector, or SPAD.next
 4. Run the GUI
 
 ```bash
@@ -116,6 +117,8 @@ chosen in the GUI. `config.yaml` only covers where the result goes and how
 hard to work, and the defaults work unchanged:
 
 ```yaml
+output: mobiflight        # or spad - also selectable in the GUI
+
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
@@ -124,11 +127,27 @@ mobiflight:
   # Failures tolerated at the base retry delay before backing off.
   max_retries: 3
 
+spad:
+  url: "ws://localhost:8088"
+  message_type: "wt737"
+
 performance:
   capture_fps: 30
   # Reuse the previous parse when a frame barely changed.
   enable_caching: true
 ```
+
+### SPAD.next instead of MobiFlight
+
+Pick **SPAD.next** under "Output" in the GUI, or set `output: spad`. The
+scraper then connects to SPAD.next's MCDU WebSocket (`spad.url`) the way
+[dementedmonkey's CJ4/737 MCDU mod](https://github.com/dementedmonkey/cj4-mcdu)
+does: it announces itself with `mcduConnected` and sends each screen as
+`update:wt737:{...}`, the Working Title 737 CDU's 24x14 grid of
+`{content, styles}` cells, so every character keeps its own colour and size.
+The captain MCDU is the left CDU and the co-pilot MCDU the right. SPAD.next
+loads the CDU font itself, so the profile's font only decides which
+characters are sent.
 
 ### The crop region
 
@@ -145,7 +164,8 @@ through them.
 Under **Advanced**, tick "Co-Pilot MCDU (second CDU)" to drive two units at
 once. It is collapsed by default because almost everyone runs a single CDU.
 Pick a second pop-out window and its own screen area; the two run as
-independent pipelines and go to `copilot_url`.
+independent pipelines and go to `copilot_url` (or, with SPAD.next, to the
+right-hand CDU).
 
 ## FAQ
 
@@ -240,7 +260,8 @@ msfs-winwing-mcdu-scraper/
 │   ├── aircraft_profiles.py    # Grid, font and store per FMS family
 │   ├── region_selector.py      # Interactive region selection dialog
 │   ├── region_geometry.py      # Selection maths, testable headless
-│   └── mobiflight_client.py    # WebSocket communication
+│   ├── mobiflight_client.py    # WebSocket communication with MobiFlight
+│   └── spad_client.py          # WebSocket communication with SPAD.next
 ├── tests/                      # Unit tests
 ├── templates/                  # Learned glyph stores (runtime), seed glyph PNGs
 ├── requirements.txt            # Python dependencies
@@ -252,8 +273,10 @@ msfs-winwing-mcdu-scraper/
 ## Troubleshooting
 
 **WebSocket connection refused**
-Ensure the MobiFlight WinWing MCDU Connector is running on `localhost:8320`.
-The client keeps retrying and backs off as failures repeat.
+Ensure the MobiFlight WinWing MCDU Connector is running on `localhost:8320`
+— or, with SPAD.next as the output, that SPAD.next is running and listening
+on `spad.url` (`localhost:8088` by default). The client keeps retrying and
+backs off as failures repeat.
 
 **No characters detected**
 Check the crop region first — this is nearly always the cause. Use the GUI's

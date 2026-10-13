@@ -126,5 +126,40 @@ class TestStopBeforeConnected(unittest.TestCase):
         self.assertTrue(finished.is_set())
 
 
+class FakeSpadConfig(FakeConfig):
+
+    def get_spad_message_type(self):
+        return "wt737"
+
+    def get_spad_aircraft(self):
+        return ""
+
+
+@unittest.skipIf(not QT_AVAILABLE, "PySide6 not installed")
+class TestSpadOutput(unittest.TestCase):
+    """With SPAD.next chosen, each MCDU gets its own side of the relay."""
+
+    def _client_for(self, name):
+        spec = McduSpec(name=name, capture=FakeCapture(),
+                        websocket_uri="ws://localhost:8088")
+        worker = ScraperWorker(FakeSpadConfig(), [spec], output="spad")
+        return worker._make_client(spec)
+
+    def test_captain_is_the_left_cdu(self):
+        client = self._client_for("captain")
+        self.assertIsInstance(client, gui.SpadClient)
+        self.assertEqual(client.side, "left")
+        self.assertEqual(client.websocket_uri, "ws://localhost:8088")
+
+    def test_copilot_is_the_right_cdu(self):
+        self.assertEqual(self._client_for("copilot").side, "right")
+
+    def test_mobiflight_stays_the_default(self):
+        spec = McduSpec(name="captain", capture=FakeCapture(),
+                        websocket_uri="ws://localhost:8320/x")
+        client = ScraperWorker(FakeConfig(), [spec])._make_client(spec)
+        self.assertIsInstance(client, gui.MobiFlightClient)
+
+
 if __name__ == "__main__":
     unittest.main()

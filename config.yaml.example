@@ -4,6 +4,10 @@
 # chosen in the GUI - they are not settings. Everything that remains here is
 # about where to send the result and how hard to work.
 
+# Where the screen goes by default: "mobiflight" or "spad" (SPAD.next).
+# Either can also be picked in the GUI before pressing Start.
+output: mobiflight
+
 mobiflight:
   # Where the MobiFlight WinWing MCDU Connector is listening.
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
@@ -21,6 +25,21 @@ mobiflight:
   # before reconnects start backing off exponentially, capped at 30s. The
   # client never gives up - MobiFlight is often simply not running yet.
   max_retries: 3
+
+spad:
+  # SPAD.next's MCDU WebSocket. The scraper connects to it the way
+  # dementedmonkey's CJ4/737 MCDU mod does, and sends the screen as the
+  # Working Title 737 CDU's 24x14 character grid. The captain MCDU is sent
+  # as the left CDU, the co-pilot MCDU as the right.
+  url: "ws://localhost:8088"
+
+  # Aircraft type tag in "update:<type>:" messages. Leave as wt737 unless
+  # SPAD.next expects a different one.
+  message_type: "wt737"
+
+  # Sent as the update's "aircraft" field, where the mod sends the sim's
+  # ATC MODEL. Empty by default.
+  # aircraft: ""
 
 performance:
   capture_fps: 30

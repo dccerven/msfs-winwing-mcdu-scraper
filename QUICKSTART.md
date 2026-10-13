@@ -15,7 +15,8 @@ It does not talk to the simulator directly — it reads whatever is on screen.
 - [ ] Windows 10/11
 - [ ] MSFS 2020/2024 with an aircraft whose FMS has a pop-out window
 - [ ] WinWing CDU hardware
-- [ ] MobiFlight **WinWing MCDU Connector** installed and running
+- [ ] MobiFlight **WinWing MCDU Connector** installed and running — or
+      **SPAD.next** (Complete Edition) instead
 - [ ] Python 3.9-3.13 — only if running from source (the `.exe` needs nothing)
 
 ## Fastest path: the GUI
@@ -24,7 +25,8 @@ The GUI needs no configuration file for the capture area — you select it
 visually.
 
 1. **Pop out the MCDU** in MSFS: right-click the MCDU → "Pop Out".
-2. **Start MobiFlight** WinWing MCDU Connector.
+2. **Start MobiFlight** WinWing MCDU Connector — or SPAD.next, and pick
+   **SPAD.next** under "Output" in the GUI.
 3. **Run the GUI**: double-click `MSFS-CDU-Scraper-GUI.exe`, or `run_gui.bat`
    from source.
 4. **Select your window** from the dropdown (look for "Flight Simulator" or
@@ -81,10 +83,15 @@ to the same one.
 goes and how hard to work:
 
 ```yaml
+output: mobiflight        # or spad
+
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
   font: "AirbusThales"
+
+spad:
+  url: "ws://localhost:8088"
 
 performance:
   capture_fps: 30
@@ -96,7 +103,9 @@ Which window to capture and which part of it to crop are chosen in the GUI.
 
 **"WebSocket connection closed" / connection refused**
 Start the MobiFlight WinWing MCDU Connector first. It listens on
-`localhost:8320`. The scraper keeps retrying, backing off as failures repeat.
+`localhost:8320`. With SPAD.next as the output, start SPAD.next instead; the
+scraper connects to `localhost:8088`. Either way it keeps retrying, backing
+off as failures repeat.
 
 **Blank or garbled CDU display**
 Almost always the capture area. Use "Select Screen Area" and check that the

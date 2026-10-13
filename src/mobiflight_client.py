@@ -56,6 +56,9 @@ def sanitise_display_data(display_data: list,
 class MobiFlightClient:
     """WebSocket client for MobiFlight/WinWing CDU communication"""
 
+    #: Name of the program at the other end, for log messages.
+    SERVICE = "MobiFlight"
+
     #: Delay between the first few reconnect attempts, in seconds.
     BASE_RETRY_DELAY = 2.0
     #: Upper bound on the backoff delay, in seconds.
@@ -83,7 +86,7 @@ class MobiFlightClient:
         self.running = True
         self._connect_lock = asyncio.Lock()
 
-        logger.info(f"MobiFlightClient initialized for {websocket_uri}")
+        logger.info("%s client initialized for %s", self.SERVICE, websocket_uri)
 
     async def _connect(self):
         """Establish (or re-establish) the WebSocket connection.
@@ -97,16 +100,23 @@ class MobiFlightClient:
                 return
             self.websocket = None
             self.connected.clear()
-            logger.info(f"Connecting to MobiFlight at {self.websocket_uri}")
+            logger.info("Connecting to %s at %s", self.SERVICE, self.websocket_uri)
             self.websocket = await ws_client.connect(
                 self.websocket_uri,
                 ping_interval=None  # CRITICAL: Must be None for stability
             )
-            logger.info(f"MobiFlight connected at {self.websocket_uri}")
-            await self._set_font()
-            await asyncio.sleep(1)
+            logger.info("%s connected at %s", self.SERVICE, self.websocket_uri)
+            await self._on_open()
             self.retries = 0
             self.connected.set()
+
+    async def _on_open(self):
+        """Prepare a freshly opened socket before anything is displayed."""
+        await self._set_font()
+        await asyncio.sleep(1)
+
+    async def _on_message(self, message) -> None:
+        """Handle one incoming message.  MobiFlight sends nothing we need."""
 
     def _retry_delay(self) -> float:
         """Seconds to wait before the next reconnect attempt.
@@ -135,7 +145,7 @@ class MobiFlightClient:
             logger.warning(message, *args)
 
     async def run(self):
-        """Connect to MobiFlight WebSocket server and maintain connection.
+        """Connect to the WebSocket server and maintain the connection.
 
         Automatically reconnects on any error with a short back-off.
         Never gives up while self.running is True.
@@ -148,9 +158,11 @@ class MobiFlightClient:
                 # Drain incoming messages (non-blocking, with a short timeout
                 # so we don't block the event loop forever).
                 try:
-                    await asyncio.wait_for(self.websocket.recv(), timeout=1.0)
+                    message = await asyncio.wait_for(self.websocket.recv(),
+                                                     timeout=1.0)
                 except asyncio.TimeoutError:
-                    pass  # nothing received — that's fine
+                    continue  # nothing received — that's fine
+                await self._on_message(message)
 
             except websockets.exceptions.ConnectionClosed:
                 self.websocket = None
