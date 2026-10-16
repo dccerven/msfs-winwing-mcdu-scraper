@@ -126,6 +126,40 @@ class TestStopBeforeConnected(unittest.TestCase):
         self.assertTrue(finished.is_set())
 
 
+@unittest.skipIf(not QT_AVAILABLE, "PySide6 not installed")
+class TestThreadEndsWithWorker(unittest.TestCase):
+    """Closing the window must not wait out the full timeout.
+
+    closeEvent stops the worker and then blocks the UI thread waiting for
+    its QThread.  Anything queued to the UI thread cannot run meanwhile, so
+    the thread has to end itself when the worker finishes - otherwise every
+    close froze the window for five seconds and exited with the thread
+    still running.
+    """
+
+    def setUp(self):
+        from PySide6.QtCore import QCoreApplication
+        # A QThread's event loop needs an application object; no widgets.
+        self.app = QCoreApplication.instance() or QCoreApplication([])
+        self._saved_client = gui.MobiFlightClient
+        gui.MobiFlightClient = NeverConnectingClient
+
+    def tearDown(self):
+        gui.MobiFlightClient = self._saved_client
+
+    def test_thread_finishes_without_the_ui_thread_running(self):
+        spec = McduSpec(name="captain", capture=FakeCapture(),
+                        websocket_uri="ws://localhost:8320/0")
+        worker = ScraperWorker(FakeConfig(), [spec])
+        thread = gui.start_worker_thread(worker)
+        threading.Event().wait(0.3)          # let it reach the connect wait
+        worker.stop()
+        # No event processing on this thread from here on, exactly as
+        # while closeEvent is waiting.
+        self.assertTrue(thread.wait(3000),
+                        "the worker finished but its QThread kept running")
+
+
 class FakeSpadConfig(FakeConfig):
 
     def get_spad_message_type(self):

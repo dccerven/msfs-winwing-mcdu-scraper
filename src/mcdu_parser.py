@@ -235,8 +235,9 @@ _RULE_MAX_THICKNESS = 0.15
 
 def brightest_channel(image: np.ndarray) -> np.ndarray:
     """Per-pixel maximum over the colour channels."""
-    if image.ndim == 3 and image.shape[2] == 3:
-        # Several times quicker than np.max(axis=2), on every frame.
+    if image.ndim == 3 and image.shape[2] == 3 and image.size:
+        # Several times quicker than np.max(axis=2).  Every per-cell test
+        # goes through here, and np.max was 40% of a whole parse.
         b, g, r = cv2.split(image)
         return cv2.max(cv2.max(b, g), r)
     return image.max(axis=2) if image.ndim == 3 else image
@@ -515,7 +516,7 @@ class MCDUParser:
     #  Colour detection
     # ------------------------------------------------------------------
     def detect_color(self, cell: np.ndarray) -> str:
-        gray = np.max(cell, axis=2)
+        gray = brightest_channel(cell)
         level = self._ink_level(gray)
         if not np.any(gray > level):
             return "w"
@@ -577,7 +578,7 @@ class MCDUParser:
         element per cell, ``[char, colour, size, inverted]``, and the CDU
         renders it as reverse video.
         """
-        bright = np.max(cell, axis=2) > self._mid_level
+        bright = brightest_channel(cell) > self._mid_level
         if float(np.mean(bright)) <= self.INVERTED_FILL_RATIO:
             return False
         ring = 2
@@ -594,7 +595,7 @@ class MCDUParser:
         avg = float(np.mean(cell)) - self._bg_floor
         if avg >= threshold:
             return False
-        gray = np.max(cell, axis=2)
+        gray = brightest_channel(cell)
         ink_ratio = (np.count_nonzero(gray > self._ink_level(gray))
                      / max(gray.size, 1))
         return ink_ratio < self.MIN_INK_RATIO
@@ -619,7 +620,7 @@ class MCDUParser:
         low variance drives the split down until noise counts as ink.  Only
         values between half the fixed threshold and 220 are accepted.
         """
-        gray = np.max(cell, axis=2)
+        gray = brightest_channel(cell)
         if inverted:
             gray = 255 - gray
         ink_threshold = self._ink_level(gray)
@@ -635,7 +636,7 @@ class MCDUParser:
     def _binarise(self, pixels: np.ndarray, level: float,
                   inverted: bool) -> np.ndarray:
         """Threshold *pixels* at *level* and close one-pixel gaps."""
-        gray = np.max(pixels, axis=2)
+        gray = brightest_channel(pixels)
         if inverted:
             gray = 255 - gray
         _, binary = cv2.threshold(gray, level, 255, cv2.THRESH_BINARY)
@@ -883,7 +884,7 @@ class MCDUParser:
         low-contrast amber) get the same ink/background separation as
         bright rows, without blurring thin strokes (CLAHE is not a blur).
         """
-        gray = np.max(img, axis=2)
+        gray = brightest_channel(img)
         # CLAHE: pushes background → 0, text → 255 independently per tile.
         # clipLimit=2.0 prevents over-amplifying noise in empty regions.
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -1178,7 +1179,7 @@ class MCDUParser:
         big a glyph was and where it sat.
         """
         try:
-            gray = np.max(cell, axis=2)
+            gray = brightest_channel(cell)
             if self.is_inverted_cell(cell):
                 # Reverse video: the glyph is the dark part.  Without this
                 # the tests below run over the surrounding block instead,

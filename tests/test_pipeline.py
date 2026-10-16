@@ -159,6 +159,30 @@ class TestMCDUPipeline(unittest.TestCase):
         asyncio.run(pipe.tick())
         self.assertEqual(self.parse_calls, 2)
 
+    def test_a_single_full_stop_is_a_change(self):
+        """Regression: the whole-frame MSE gate averaged a glyph away.
+
+        A full stop is a few pixels in a frame of hundreds of thousands, so
+        its mean squared error stayed under the old threshold and the frame
+        was served from the cache - the CDU never showed the change.
+        """
+        page = np.zeros((618, 790, 3), dtype=np.uint8)   # a live E-Jets crop
+        dotted = page.copy()
+        dotted[100:103, 200:203] = 255
+        pipe, _ = self._pipeline([page, dotted])
+        asyncio.run(pipe.tick())
+        asyncio.run(pipe.tick())
+        self.assertEqual(self.parse_calls, 2, "missed a full stop appearing")
+
+    def test_faint_flicker_is_not_a_change(self):
+        """Below the per-pixel delta, a frame still counts as the same."""
+        shimmer = self.frame.copy()
+        shimmer[:] = 30
+        pipe, _ = self._pipeline([self.frame, shimmer])
+        asyncio.run(pipe.tick())
+        asyncio.run(pipe.tick())
+        self.assertEqual(self.parse_calls, 1)
+
     def test_caching_can_be_disabled(self):
         settings = PipelineSettings(stability_frames=1, debug_interval=0,
                                     enable_caching=False)

@@ -280,6 +280,25 @@ class ScraperWorker(QObject):
         await asyncio.gather(*(self._drive(spec) for spec in self.specs))
 
 
+def start_worker_thread(worker: ScraperWorker) -> QThread:
+    """Run *worker* on a new QThread that ends when the worker does.
+
+    The thread's own event loop only stops on quit(), and that has to be
+    called from the worker's thread, directly.  It used to be left to the
+    window's finished handler, which is queued to the UI thread - and when
+    the window is closed while running, the UI thread is the one sitting in
+    closeEvent waiting for the thread.  So every such close froze the window
+    for the full five-second wait and then quit with the thread still
+    running, which ended the process with exit code 127.
+    """
+    thread = QThread()
+    worker.moveToThread(thread)
+    thread.started.connect(worker.start)
+    worker.finished.connect(thread.quit, Qt.DirectConnection)
+    thread.start()
+    return thread
+
+
 class MCDUScraperWindow(QMainWindow):
     """Main window: window picker, controls and log pane."""
 
@@ -761,9 +780,6 @@ class MCDUScraperWindow(QMainWindow):
             working_cell_height=profile.working_cell_height,
             output=output,
         )
-        self.thread = QThread()
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.start)
         service = OUTPUT_LABELS[output]
         self.worker.connected.connect(
             lambda name: self.log(
@@ -773,7 +789,7 @@ class MCDUScraperWindow(QMainWindow):
         )
         self.worker.failed.connect(self._on_worker_failed)
         self.worker.finished.connect(self._on_worker_finished)
-        self.thread.start()
+        self.thread = start_worker_thread(self.worker)
 
         self.running = True
         self._set_inputs_enabled(False)
@@ -882,8 +898,11 @@ class MCDUScraperWindow(QMainWindow):
                 event.ignore()
                 return
             self.stop_scraper()
-            if self.thread:
-                self.thread.wait(5000)
+            # The finished handler is queued to this thread and will never
+            # run once the window has gone, so release the captures here -
+            # but only once the worker can no longer be reading from them.
+            if self.thread is None or self.thread.wait(5000):
+                self._release_captures()
 
         root = logging.getLogger()
         root.removeHandler(self._log_handler)

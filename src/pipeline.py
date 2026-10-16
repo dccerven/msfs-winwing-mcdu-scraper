@@ -19,9 +19,10 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional
 
+import cv2
 import numpy as np
 
-from mcdu_parser import MCDUParser
+from mcdu_parser import MCDUParser, brightest_channel
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,19 @@ class PipelineSettings:
     #: When True, a frame close enough to the previous one reuses its parse
     #: result instead of re-running OCR.
     enable_caching: bool = True
-    #: Mean-squared-error below which two frames count as identical.
-    frame_change_mse: float = 3.0
+    #: A pixel counts as changed when its brightest channel moves by more
+    #: than this between frames.
+    frame_change_delta: int = 40
+    #: A frame counts as changed once this many pixels have.  The cache
+    #: used to compare whole frames by mean squared error, and averaged over
+    #: a whole screen the change one glyph makes all but disappears: taking
+    #: a full stop off a live E-Jets RADIO page moved it by 1.0, under the
+    #: 3.0 threshold, so a decimal point typed into the scratchpad never
+    #: reached the CDU.  The same change is 175 pixels here.  The noise the
+    #: MSE threshold was there to absorb was measured at zero - 32 idle WGC
+    #: frames in a row were byte-identical - so a few pixels is margin
+    #: enough, and still below the smallest full stop of a small window.
+    frame_change_pixels: int = 3
     #: A cell only reaches the CDU once its new value has held for this many
     #: consecutive frames.  Suppresses per-frame OCR jitter.
     stability_frames: int = 3
@@ -310,10 +322,11 @@ class MCDUPipeline:
             return False
         if self._last_frame is None or img.shape != self._last_frame.shape:
             return False
-        mse = float(np.mean(
-            (img.astype(np.float32) - self._last_frame.astype(np.float32)) ** 2
-        ))
-        return mse < self.settings.frame_change_mse
+        delta = brightest_channel(cv2.absdiff(img, self._last_frame))
+        changed = cv2.countNonZero(
+            cv2.threshold(delta, self.settings.frame_change_delta, 255,
+                          cv2.THRESH_BINARY)[1])
+        return changed < self.settings.frame_change_pixels
 
     # ------------------------------------------------------------------
     #  Diagnostics
