@@ -236,6 +236,13 @@ class TestContextCorrection(unittest.TestCase):
     def test_decimals_stay_one_token(self):
         self.assertEqual(_correct_row_context("ILS 11O.3O"), "ILS 110.30")
 
+    def test_utc_suffix_is_not_a_misread_two(self):
+        """Regression from the live E-Jets NAV IDENT page: 0032Z read 00322."""
+        self.assertEqual(_correct_token("0032Z"), "0032Z")
+        self.assertEqual(_correct_row_context("UTC 1435Z"), "UTC 1435Z")
+        # The body of the time is still corrected.
+        self.assertEqual(_correct_token("0O32Z"), "0032Z")
+
     def test_nav_database_dates_are_not_rewritten(self):
         """Regression from a real capture: 22JAN came back as 2ZJAN.
 

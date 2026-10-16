@@ -189,6 +189,20 @@ FRAGMENT_NEW_MESSAGES = [
     "                        ",
 ]
 
+#: KMEM SIDs in the fragment window, live.  DEPARTURE and its arrow sit in a
+#: reverse-video block that starts 4px into its first cell: inverted, that
+#: strip of screen was a bar beside the D, the rows above and below were
+#: solid ink in the widened window, and the block's soft edge was a line
+#: under every letter.  It read OEPARIURL, with the arrow lost.
+FRAGMENT_SIDS = [
+    "        KMEM SIDS    1/1",
+    "                        ",
+    "←ELVIS4                 ",
+] + ["                        "] * 9 + [
+    "←RUNWAY       DEPARTURE→",
+    "                        ",
+]
+
 #: window capture -> (grid Auto Detect must land near, page text)
 WINDOWS = {
     "ejets_fragment_progress3.png": ((14, 49, 1147, 897), FRAGMENT_PROGRESS3),
@@ -404,6 +418,29 @@ class TestFragmentNewMessages(_ReadsThePage, unittest.TestCase):
     def crop(cls):
         x, y, w, h = 13, 49, 1148, 893
         return load(DATA / "ejets_fragment_new_messages.png")[y:y + h, x:x + w]
+
+
+@unittest.skipIf(not (DATA / "ejets_fragment_sids.png").exists(),
+                 "E-Jets SIDs capture missing")
+class TestFragmentSids(_ReadsThePage, unittest.TestCase):
+    """Reverse video, read on the box Auto Detect found on the RADIO page.
+
+    That is the box the live session used.  Auto Detect run on this page
+    itself lands on a different pitch: three rows of text are too few.
+    """
+
+    truth = FRAGMENT_SIDS
+
+    @classmethod
+    def crop(cls):
+        x, y, w, h = 17, 49, 1139, 891
+        return load(DATA / "ejets_fragment_sids.png")[y:y + h, x:x + w]
+
+    def test_nothing_reads_as_reverse_video(self):
+        """Only the DEPARTURE block, arrow included."""
+        inverted = [(row, col) for row in range(14) for col in range(24)
+                    if len(self.parsed[row * 24 + col]) > 3]
+        self.assertEqual(inverted, [(12, col) for col in range(14, 24)])
 
 
 class TestPerfInitWindow(_WindowRead, unittest.TestCase):

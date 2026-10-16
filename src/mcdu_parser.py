@@ -139,6 +139,13 @@ def _correct_token(token: str) -> str:
     if len(token) < 2:
         return token
 
+    # A trailing Z on a number is the UTC suffix - the E-Jets NAV IDENT
+    # page shows the time as 0032Z, and reading the Z as a misread 2 sent
+    # 00322 to the CDU.  Times carry it far more often than a number ends
+    # in a misread 2, so it is kept, and only the body is corrected.
+    if token[-1] == "Z" and len(token) >= 3 and token[-2].isdigit():
+        return _correct_token(token[:-1]) + "Z"
+
     # Count evidence from characters that cannot be confused.
     digits = sum(1 for c in token
                  if c.isdigit() and c not in _AMBIGUOUS_DIGITS)
@@ -588,6 +595,49 @@ class MCDUParser:
         ])
         return float(np.mean(border)) > self.INVERTED_BORDER_RATIO
 
+    #: A bright component counts as part of a reverse-video block when it is
+    #: at least this fraction of the largest one.  A glyph can split the
+    #: block's bright area into pieces; a neighbouring row's ordinary text,
+    #: reached by a widened window, is far smaller than any piece of a block.
+    BLOCK_PART_RATIO = 0.25
+
+    #: Width of a block's anti-aliased edge, left out of the glyph.
+    BLOCK_EDGE_PX = 1
+
+    def _invert_within_block(self, gray: np.ndarray) -> np.ndarray:
+        """A reverse-video area inverted, with only the block's inside kept.
+
+        Inverting turns the glyph into ink, but it turns everything that is
+        not block into ink as well.  On the E-Jets SIDs page the DEPARTURE
+        block starts 4px into its first cell, and that strip of screen came
+        out as a bar beside the D, which then read as O.  Worse, the window
+        widened to reclaim spilled glyphs reaches into the rows above and
+        below, which became solid bands of ink and wrecked the arrow at the
+        end of the block.  The glyph is the dark part *inside* the block, so
+        everything outside the block's bounds is set to background.
+        """
+        inverted = 255 - gray
+        bright = (gray > self._mid_level).astype(np.uint8)
+        count, _, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
+        if count <= 1:
+            return inverted
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        parts = 1 + np.nonzero(areas >= areas.max() * self.BLOCK_PART_RATIO)[0]
+        x0 = int(stats[parts, cv2.CC_STAT_LEFT].min())
+        y0 = int(stats[parts, cv2.CC_STAT_TOP].min())
+        x1 = int((stats[parts, cv2.CC_STAT_LEFT]
+                  + stats[parts, cv2.CC_STAT_WIDTH]).max())
+        y1 = int((stats[parts, cv2.CC_STAT_TOP]
+                  + stats[parts, cv2.CC_STAT_HEIGHT]).max())
+        # The block's own edge is anti-aliased: a pixel-wide line part way
+        # between block and screen, which inverts to a line of ink along the
+        # glyph - under the E it joined the bottom bar and dragged its seed
+        # score from 0.6 to below zero.  Keep only what lies inside it.
+        edge = self.BLOCK_EDGE_PX
+        inside = np.zeros_like(inverted)
+        inside[y0 + edge:y1 - edge, x0 + edge:x1 - edge] =             inverted[y0 + edge:y1 - edge, x0 + edge:x1 - edge]
+        return inside
+
     # ------------------------------------------------------------------
     #  Empty-cell detection  (adaptive)
     # ------------------------------------------------------------------
@@ -622,7 +672,7 @@ class MCDUParser:
         """
         gray = brightest_channel(cell)
         if inverted:
-            gray = 255 - gray
+            gray = self._invert_within_block(gray)
         ink_threshold = self._ink_level(gray)
         if ink_threshold < self.INK_THRESHOLD + self._bg_floor:
             # Grey text: Otsu would split it at its own fringe.
@@ -638,7 +688,7 @@ class MCDUParser:
         """Threshold *pixels* at *level* and close one-pixel gaps."""
         gray = brightest_channel(pixels)
         if inverted:
-            gray = 255 - gray
+            gray = self._invert_within_block(gray)
         _, binary = cv2.threshold(gray, level, 255, cv2.THRESH_BINARY)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
@@ -1185,7 +1235,7 @@ class MCDUParser:
                 # the tests below run over the surrounding block instead,
                 # and since their answer now outranks both engines, the
                 # UNS-1's inverted ACCEPT prompt lost its arrow.
-                gray = 255 - gray
+                gray = self._invert_within_block(gray)
             ink_threshold = self._ink_level(gray)
             _, binary = cv2.threshold(gray, ink_threshold, 255,
                                       cv2.THRESH_BINARY)
